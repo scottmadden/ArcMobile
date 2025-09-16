@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../../lib/supabase";
 
 type Truck = { id: string; name: string };
@@ -8,11 +8,13 @@ type DocRow = { id: string; truck_id: string; file_path: string; doc_type: strin
 
 export default function DocumentsPage() {
   const [log, setLog] = useState<string[]>([]);
+  const [notice, setNotice] = useState<string>("");
   const [trucks, setTrucks] = useState<Truck[]>([]);
   const [truckId, setTruckId] = useState<string>("");
   const [docs, setDocs] = useState<DocRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const fileRef = useRef<HTMLInputElement | null>(null);
 
   // Load org trucks, pick first
   useEffect(() => {
@@ -38,43 +40,50 @@ export default function DocumentsPage() {
     })();
   }, []);
 
-  // Load docs for selected truck
-  useEffect(() => {
-    if (!truckId) return;
-    (async () => {
-      const { data, error } = await supabase
-        .from("documents")
-        .select("id, truck_id, file_path, doc_type, created_at")
-        .eq("truck_id", truckId)
-        .order("created_at", { ascending: false });
-      if (error) setLog((l)=>[...l, `documents load error: ${error.message}`]);
-      setDocs(data || []);
-    })();
-  }, [truckId]);
+  async function refreshList(id = truckId) {
+    if (!id) return;
+    const { data, error } = await supabase
+      .from("documents")
+      .select("id, truck_id, file_path, doc_type, created_at")
+      .eq("truck_id", id)
+      .order("created_at", { ascending: false });
+    if (error) setLog((l)=>[...l, `documents load error: ${error.message}`]);
+    setDocs(data || []);
+  }
 
-  const truckName = useMemo(() => trucks.find(t => t.id === truckId)?.name ?? "Truck", [trucks, truckId]);
+  useEffect(() => { if (truckId) refreshList(truckId); }, [truckId]);
 
-  async function uploadFiles(files: FileList | null) {
-    if (!files || !truckId) return;
-    setBusy(true);
+  const truckName = useMemo(
+    () => trucks.find(t => t.id === truckId)?.name ?? "Truck",
+    [trucks, truckId]
+  );
+
+  async function uploadSelected() {
+    const input = fileRef.current;
+    if (!input || !input.files || !truckId) return;
+    const files = Array.from(input.files);
+    setBusy(true); setNotice(""); setLog([]);
+
     try {
       const u = await supabase.auth.getUser();
       if (!u.data.user) { setLog((l)=>[...l,"Not signed in"]); return; }
 
-      for (const file of Array.from(files)) {
+      for (const file of files) {
         const path = `truck-${truckId}/${Date.now()}-${file.name}`;
-        const { error: upErr } = await supabase.storage.from("documents").upload(path, file, { upsert: true });
-        if (upErr) { setLog((l)=>[...l, `storage upload error: ${upErr.message}`]); continue; }
+        const up = await supabase.storage.from("documents").upload(path, file, { upsert: true });
+        if (up.error) { setLog((l)=>[...l, `storage upload error: ${up.error.message}`]); continue; }
 
-        const { data: row, error: rowErr } = await supabase
-          .from("documents")
+        const ins = await supabase.from("documents")
           .insert({ truck_id: truckId, file_path: path, doc_type: "permit", uploaded_by: u.data.user.id })
           .select("id, truck_id, file_path, doc_type, created_at")
           .single();
-        if (rowErr) { setLog((l)=>[...l, `row insert error: ${rowErr.message}`]); continue; }
+        if (ins.error) { setLog((l)=>[...l, `row insert error: ${ins.error.message}`]); continue; }
 
-        setDocs(prev => [row!, ...prev]);
+        setDocs(prev => [ins.data!, ...prev]);
       }
+
+      if (files.length) setNotice(`${files.length} file(s) uploaded.`);
+      input.value = ""; // clear picker
     } finally {
       setBusy(false);
     }
@@ -82,10 +91,7 @@ export default function DocumentsPage() {
 
   async function viewDoc(row: DocRow) {
     const { data, error } = await supabase.storage.from("documents").createSignedUrl(row.file_path, 60);
-    if (error || !data?.signedUrl) {
-      setLog((l)=>[...l, `signed url error: ${error?.message ?? "no url"}`]);
-      return;
-    }
+    if (error || !data?.signedUrl) { setLog((l)=>[...l, `signed url error: ${error?.message ?? "no url"}`]); return; }
     window.open(data.signedUrl, "_blank");
   }
 
@@ -94,9 +100,9 @@ export default function DocumentsPage() {
     setBusy(true);
     try {
       const { error: del1 } = await supabase.storage.from("documents").remove([row.file_path]);
-      if (del1) { setLog((l)=>[...l, `storage delete error: ${del1.message}`]); }
+      if (del1) setLog((l)=>[...l, `storage delete error: ${del1.message}`]);
       const { error: del2 } = await supabase.from("documents").delete().eq("id", row.id);
-      if (del2) { setLog((l)=>[...l, `row delete error: ${del2.message}`]); }
+      if (del2) setLog((l)=>[...l, `row delete error: ${del2.message}`]);
       setDocs(prev => prev.filter(d => d.id !== row.id));
     } finally {
       setBusy(false);
@@ -110,35 +116,32 @@ export default function DocumentsPage() {
       <h1 className="text-xl font-bold">Documents</h1>
       <p className="text-[#6B7280] mt-1">Upload, view, and delete documents for your trucks.</p>
 
-      {process.env.NEXT_PUBLIC_DEBUG === "true" && log.length > 0 && (
-        <div className="mt-3 bg-red-50 border border-red-200 text-red-700 p-3 rounded-xl">
-          <div className="font-semibold">Debug</div>
-          <ul className="list-disc pl-6">{log.map((m,i)=><li key={i}>{m}</li>)}</ul>
+      {/* Status */}
+      {(notice || log.length>0) && (
+        <div className={`mt-3 p-3 rounded-xl ${log.length ? "bg-red-50 border border-red-200 text-red-700" : "bg-green-50 border border-green-200 text-green-700"}`}>
+          {notice && <div>{notice}</div>}
+          {log.length>0 && (<ul className="list-disc pl-6">{log.map((m,i)=><li key={i}>{m}</li>)}</ul>)}
         </div>
       )}
 
-      {/* Truck picker */}
+      {/* Truck picker + refresh */}
       <div className="mt-4 flex items-center gap-2">
         <label className="text-sm text-[#6B7280]">Truck</label>
-        <select
-          className="border rounded-lg p-2 bg-white"
-          value={truckId}
-          onChange={(e)=> setTruckId(e.target.value)}
-        >
+        <select className="border rounded-lg p-2 bg-white" value={truckId} onChange={(e)=> setTruckId(e.target.value)}>
           {trucks.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
         </select>
+        <button className="rounded-xl border px-3 py-2" onClick={()=>refreshList()}>Refresh</button>
       </div>
 
       {/* Upload */}
       <div className="mt-4 bg-white rounded-2xl shadow-sm p-4">
         <div className="font-semibold">Upload Documents</div>
-        <input
-          className="mt-2"
-          type="file"
-          multiple
-          onChange={(e)=> uploadFiles(e.target.files)}
-          disabled={busy}
-        />
+        <div className="flex items-center gap-3 mt-2">
+          <input ref={fileRef} type="file" multiple disabled={busy} />
+          <button className="rounded-xl bg-[#004C97] text-white px-3 py-2 disabled:opacity-50" disabled={busy} onClick={uploadSelected}>
+            {busy ? "Uploading…" : "Upload"}
+          </button>
+        </div>
         <div className="text-xs text-[#6B7280] mt-1">Files are private; links expire after 60s.</div>
       </div>
 
