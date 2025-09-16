@@ -1,8 +1,7 @@
-// app/layout.tsx
 import "./globals.css";
 import type { Metadata } from "next";
-import Link from "next/link";
 import MobileNav from "../components/MobileNav";
+import AuthGate from "../components/AuthGate";
 
 export const metadata: Metadata = {
   title: "ArcMobile",
@@ -15,21 +14,24 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <header className="sticky top-0 z-40 bg-white/90 backdrop-blur border-b">
           <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
-            <Link href="/dashboard" className="font-bold">ArcMobile</Link>
+            <a className="font-bold" href="/">ArcMobile</a>
             <nav className="hidden md:flex gap-4 text-sm">
-              <Link className="hover:underline" href="/assignments">Assignments</Link>
-              <Link className="hover:underline" href="/checklist">Checklist</Link>
-              <Link className="hover:underline" href="/documents">Documents</Link>
-              <Link className="hover:underline" href="/audit">Audit</Link>
-              <Link className="hover:underline" href="/analytics">Analytics</Link>
-              <Link className="hover:underline" href="/setup">Setup</Link>
+              <a className="hover:underline" href="/assignments">Assignments</a>
+              <a className="hover:underline" href="/checklist">Checklist</a>
+              <a className="hover:underline" href="/documents">Documents</a>
+              <a className="hover:underline" href="/audit">Audit</a>
+              <a className="hover:underline" href="/analytics">Analytics</a>
+              <a className="hover:underline" href="/setup">Setup</a>
+              <a className="hover:underline" href="/login">Login</a>
             </nav>
           </div>
         </header>
 
-        <main className="max-w-4xl mx-auto px-4 py-4 page">
-          {children}
-        </main>
+        <AuthGate>
+          <main className="max-w-4xl mx-auto px-4 py-4 page">
+            {children}
+          </main>
+        </AuthGate>
 
         <MobileNav />
       </body>
