@@ -1,151 +1,106 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { supabase } from "../../lib/supabase";
 
-type Template = { id: string; name: string };
 type Item = { id: string; text: string; sort_order: number };
-type Truck = { id: string; name: string };
 
-export default function ChecklistPage() {
-  const [templates, setTemplates] = useState<Template[]>([]);
-  const [items, setItems] = useState<Item[]>([]);
-  const [truck, setTruck] = useState<Truck | null>(null);
+export default function ChecklistRunPage() {
+  const params = useSearchParams();
+  const cid = params.get("cid"); // checklist id
   const [log, setLog] = useState<string[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [stats, setStats] = useState<{ completionPct: number; overdue: number }>({ completionPct: 0, overdue: 0 });
-  const router = useRouter();
+  const [items, setItems] = useState<Item[]>([]);
+  const [checked, setChecked] = useState<Record<string, boolean>>({});
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     (async () => {
-      const { data: trucks, error: trErr } = await supabase.from("trucks").select("id,name").limit(1);
-      if (trErr) setLog((l) => [...l, `trucks error: ${trErr.message}`]);
-      setTruck(trucks?.[0] ?? null);
-
-      const { data: t, error: tErr } = await supabase.from("templates").select("id,name");
-      if (tErr) setLog((l) => [...l, `templates error: ${tErr.message}`]);
-      setTemplates(t || []);
-
-      if (t && t[0]) {
-        const { data: i, error: iErr } = await supabase
-          .from("items")
-          .select("id,text,sort_order")
-          .eq("template_id", t[0].id)
-          .order("sort_order");
-        if (iErr) setLog((l) => [...l, `items error: ${iErr.message}`]);
-        setItems(i || []);
-      }
-    })();
-  }, []);
-
-  useEffect(() => {
-    (async () => {
-      const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-
-      const total = await supabase.from("checklists").select("id", { count: "exact", head: true }).gte("created_at", since);
-      const completed = await supabase
+      if (!cid) { setLog(l=>[...l,"Missing checklist id (cid)"]); return; }
+      // Load items for this checklist via its template
+      const { data: run, error: runErr } = await supabase
         .from("checklists")
-        .select("id", { count: "exact", head: true })
-        .gte("created_at", since)
-        .eq("status", "completed");
-      const overdueOpen = await supabase
-        .from("checklists")
-        .select("id", { count: "exact", head: true })
-        .lt("created_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
-        .eq("status", "open");
+        .select("template_id")
+        .eq("id", cid)
+        .maybeSingle();
+      if (runErr) { setLog(l=>[...l,`load run error: ${runErr.message}`]); return; }
+      if (!run?.template_id) { setLog(l=>[...l,"No template found for checklist"]); return; }
 
-      const totalCount = total.count ?? 0;
-      const completedCount = completed.count ?? 0;
-      const pct = totalCount ? Math.round((completedCount / totalCount) * 100) : 0;
-      setStats({ completionPct: pct, overdue: overdueOpen.count ?? 0 });
+      const { data: its, error: iErr } = await supabase
+        .from("items")
+        .select("id, text, sort_order")
+        .eq("template_id", run.template_id)
+        .order("sort_order", { ascending: true });
+      if (iErr) { setLog(l=>[...l,`load items error: ${iErr.message}`]); return; }
+      setItems(its || []);
     })();
-  }, []);
+  }, [cid]);
 
-  async function runChecklist(templateId: string) {
+  const allDone = useMemo(() => items.length > 0 && items.every(i => checked[i.id]), [items, checked]);
+
+  async function submit() {
+    if (!cid) return;
+    setSubmitting(true);
     try {
-      if (!truck) { setLog((l) => [...l, "No truck found in your org."]); return; }
-      setLoading(true);
+      const { data: u } = await supabase.auth.getUser();
+      const rows = items.map(i => ({
+        checklist_id: cid,
+        item_id: i.id,
+        ok: !!checked[i.id],
+        created_by: u.user?.id ?? null,
+      }));
+      // Insert responses
+      const ins = await supabase.from("responses").insert(rows);
+      if (ins.error) { setLog(l=>[...l,`responses error: ${ins.error.message}`]); return; }
 
-      const u = await supabase.auth.getUser();
-      if (!u.data.user) { setLog((l) => [...l, "Not signed in."]); return; }
+      // Mark checklist submitted + audit
+      const up = await supabase.from("checklists").update({ status: "submitted", submitted_at: new Date().toISOString() }).eq("id", cid);
+      if (up.error) { setLog(l=>[...l,`submit error: ${up.error.message}`]); return; }
 
-      // Create checklist
-      const { data, error } = await supabase
-        .from("checklists")
-        .insert({
-          truck_id: truck.id,
-          template_id: templateId,
-          assigned_to: u.data.user.id,
-          status: "open"
-        })
-        .select("id")
-        .single();
+      await supabase.from("audit_log").insert({
+        action: "checklist_submitted",
+        meta: { checklist_id: cid, total_items: items.length, ok_count: rows.filter(r=>r.ok).length }
+      } as any);
 
-      if (error || !data?.id) { setLog((l) => [...l, `create checklist error: ${error?.message || "unknown"}`]); return; }
-
-      // Audit: start_checklist with actor
-      const { data: tr } = await supabase.from("trucks").select("org_id").eq("id", truck.id).single();
-      if (tr?.org_id) {
-        await supabase.from("audit_log").insert({
-          org_id: tr.org_id,
-          actor: u.data.user.id,
-          action: "start_checklist",
-          entity: "checklists",
-          entity_id: data.id
-        });
-      }
-
-      router.push(`/checklist/${data.id}`);
+      window.location.href = "/assignments";
     } finally {
-      setLoading(false);
+      setSubmitting(false);
     }
   }
 
   return (
-    <main className="p-6">
-      <h1 className="text-xl font-bold">Checklists</h1>
-      <p className="text-muted mt-1">Run a checklist for your truck.</p>
-
-      {log.length > 0 && (
-        <div className="mt-3 bg-red-50 border border-red-200 text-red-700 p-3 rounded-xl">
-          <div className="font-semibold">Debug</div>
-          <ul className="list-disc pl-6">{log.map((m, i) => <li key={i}>{m}</li>)}</ul>
+    <main className="p-6 space-y-4">
+      <h1 className="text-xl font-bold">Checklist</h1>
+      {log.length>0 && (
+        <div className="bg-red-50 border border-red-200 text-red-700 p-3 rounded-2xl">
+          <div className="font-semibold mb-1">Debug</div>
+          <ul className="list-disc pl-6">{log.map((m,i)=><li key={i}>{m}</li>)}</ul>
         </div>
       )}
+      <p className="text-[#6B7280]">Tap to mark items, then submit.</p>
 
-      <div className="mt-4 grid gap-3">
-        {templates.map((t) => (
-          <div key={t.id} className="bg-white rounded-2xl shadow-sm p-4">
-            <div className="font-semibold">{t.name}</div>
-            <button
-              onClick={() => runChecklist(t.id)}
-              disabled={loading || !truck}
-              className="mt-3 w-full rounded-xl bg-[#004C97] text-white py-2"
-            >
-              {loading ? "Starting..." : "Run Checklist"}
-            </button>
-          </div>
-        ))}
-      </div>
-
-      <h2 className="text-lg font-semibold mt-6">Items (preview)</h2>
-      <div className="mt-2 space-y-2">
-        {items.map((it) => (
-          <label key={it.id} className="flex items-center gap-3 bg-white p-3 rounded-xl">
-            <input type="checkbox" disabled />
-            <span>{it.text}</span>
+      <div className="space-y-3">
+        {items.map(i => (
+          <label key={i.id} className="flex items-center gap-3 bg-white rounded-2xl shadow-sm p-4">
+            <input
+              type="checkbox"
+              className="w-6 h-6"
+              checked={!!checked[i.id]}
+              onChange={e => setChecked(prev => ({ ...prev, [i.id]: e.target.checked }))}
+            />
+            <span className="text-lg">{i.text}</span>
           </label>
         ))}
+        {items.length === 0 && <div className="text-[#6B7280]">No items loaded.</div>}
       </div>
 
-      <div className="mt-8 bg-white rounded-2xl shadow-sm p-4">
-        <div className="font-semibold mb-2">Analytics (7 days)</div>
-        <div className="flex gap-6 text-sm">
-          <div>Completion %: <b>{stats.completionPct}%</b></div>
-          <div>Overdue (open &gt;24h): <b>{stats.overdue}</b></div>
-        </div>
-      </div>
+      <button
+        className="w-full rounded-2xl bg-[#004C97] text-white py-4 disabled:opacity-50"
+        disabled={submitting || items.length === 0}
+        onClick={submit}
+      >
+        {submitting ? "Submitting…" : `Submit Checklist${allDone ? "" : " (some items unchecked)"}`}
+      </button>
     </main>
   );
 }
