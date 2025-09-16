@@ -1,13 +1,24 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "../../lib/supabase";
 
 type Item = { id: string; text: string; sort_order: number };
-type Run = { id: string; template_id: string | null };
 
-export default function ChecklistRunPage() {
+// Force this route to be dynamic so Vercel doesn't try to prerender it statically
+export const dynamic = "force-dynamic";
+
+export default function ChecklistPage() {
+  // Wrap the component that uses useSearchParams in Suspense (fixes Next.js build error)
+  return (
+    <Suspense fallback={<main className="p-6">Loading…</main>}>
+      <ChecklistRunPageInner />
+    </Suspense>
+  );
+}
+
+function ChecklistRunPageInner() {
   const params = useSearchParams();
   const cid = params.get("cid"); // checklist id (required)
 
