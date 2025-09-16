@@ -1,6 +1,4 @@
-# run these in your project folder
-mkdir -p app/audit
-cat > app/audit/page.tsx <<'TSX'
+
 "use client";
 
 import { useEffect, useState } from "react";
@@ -59,9 +57,4 @@ export default function AuditPage() {
     </main>
   );
 }
-TSX
 
-# then commit & push
-git add app/audit/page.tsx
-git commit -m "feat: add /audit page"
-git push
