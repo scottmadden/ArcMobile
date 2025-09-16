@@ -63,7 +63,7 @@ export default function DocumentsPage() {
   async function refreshList(id = truckId) {
     if (!id) return;
     const { data, error } = await supabase
-      .from("documents")
+      .from("docs")
       .select("id, truck_id, file_path, doc_type, created_at")
       .eq("truck_id", id)
       .order("created_at", { ascending: false });
@@ -101,7 +101,7 @@ export default function DocumentsPage() {
         const path = `truck-${truckId}/${Date.now()}-${file.name}`;
 
         // Storage upload (requires storage.objects policy on bucket 'documents')
-        const up = await supabase.storage.from("documents").upload(path, file, { upsert: true });
+        const up = await supabase.storage.from("docs").upload(path, file, { upsert: true });
         if (up.error) {
           setLog((l) => [...l, `storage upload error: ${up.error.message}`]);
           continue;
@@ -109,7 +109,7 @@ export default function DocumentsPage() {
 
         // DB row insert (requires public.documents RLS)
         const ins = await supabase
-          .from("documents")
+          .from("docs")
           .insert({
             truck_id: truckId,
             file_path: path,
@@ -136,7 +136,7 @@ export default function DocumentsPage() {
   }
 
   async function viewDoc(row: DocRow) {
-    const { data, error } = await supabase.storage.from("documents").createSignedUrl(row.file_path, 60);
+    const { data, error } = await supabase.storage.from("docs").createSignedUrl(row.file_path, 60);
     if (error || !data?.signedUrl) {
       setLog((l) => [...l, `signed url error: ${error?.message ?? "no url"}`]);
       return;
@@ -148,9 +148,9 @@ export default function DocumentsPage() {
     if (!confirm("Delete this document?")) return;
     setBusy(true);
     try {
-      const { error: del1 } = await supabase.storage.from("documents").remove([row.file_path]);
+      const { error: del1 } = await supabase.storage.from("docs").remove([row.file_path]);
       if (del1) setLog((l) => [...l, `storage delete error: ${del1.message}`]);
-      const { error: del2 } = await supabase.from("documents").delete().eq("id", row.id);
+      const { error: del2 } = await supabase.from("docs").delete().eq("id", row.id);
       if (del2) setLog((l) => [...l, `row delete error: ${del2.message}`]);
       setDocs((prev) => prev.filter((d) => d.id !== row.id));
     } finally {
