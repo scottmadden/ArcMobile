@@ -10,7 +10,7 @@ type Checklist = { id: string; template_id: string; truck_id: string; status: st
 type Photo = { id: string; file_path: string; created_at: string; url?: string };
 type Sig   = { id: string; file_path: string; signed_at: string; url?: string };
 
-// --- tiny helper: Safari <->Blob fallback ---
+// Safari-safe canvas -> Blob
 async function canvasToBlob(c: HTMLCanvasElement): Promise<Blob> {
   if (c.toBlob) return await new Promise((res) => c.toBlob((b) => res(b as Blob), "image/png"));
   const dataUrl = c.toDataURL("image/png");
@@ -31,7 +31,7 @@ export default function ChecklistRunPage() {
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [sig, setSig] = useState<Sig | null>(null);
 
-  // Signature pad refs
+  // Signature pad
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
   const drawing = useRef(false);
@@ -117,7 +117,7 @@ export default function ChecklistRunPage() {
     setPhotos((prev)=> [{ ...row, url: link?.signedUrl }, ...prev ]);
   }
 
-  /** Signature pad: Pointer Events + mouse/touch fallback + HiDPI scaling **/
+  /** Signature pad: NO pointer-capture (Safari), HiDPI scaling, dot-on-tap **/
   useEffect(() => {
     const c = canvasRef.current; if (!c) return;
 
@@ -127,10 +127,12 @@ export default function ChecklistRunPage() {
       c.width  = Math.max(1, Math.floor(rect.width * dpr));
       c.height = Math.max(1, Math.floor(rect.height * dpr));
       const ctx = c.getContext("2d"); if (!ctx) return;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.strokeStyle = "#111827";
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);          // scale once for CSS pixels
+      ctx.lineWidth = 2; ctx.lineCap = "round";
+      ctx.strokeStyle = "#111827";
       ctxRef.current = ctx;
     };
+
     resize();
     window.addEventListener("resize", resize);
     return () => window.removeEventListener("resize", resize);
@@ -142,50 +144,65 @@ export default function ChecklistRunPage() {
     return { x: clientX - rect.left, y: clientY - rect.top };
   };
 
-  // Pointer Events (works in iOS Safari/Chrome)
+  const startAt = (x: number, y: number) => {
+    const ctx = ctxRef.current; if (!ctx) return;
+    drawing.current = true;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    // draw a tiny segment so a simple tap leaves a visible dot
+    ctx.lineTo(x + 0.01, y);
+    ctx.stroke();
+  };
+
+  const drawTo = (x: number, y: number) => {
+    if (!drawing.current) return;
+    const ctx = ctxRef.current; if (!ctx) return;
+    ctx.lineTo(x, y);
+    ctx.stroke();
+  };
+
+  const endDraw = () => { drawing.current = false; };
+
+  // Pointer events (iOS Safari/Chrome support)
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.preventDefault();
-    const ctx = ctxRef.current; if (!ctx) return;
-    (e.target as any).setPointerCapture?.(e.pointerId);
-    drawing.current = true;
     const p = getPos(e.clientX, e.clientY);
-    ctx.beginPath(); ctx.moveTo(p.x, p.y);
+    startAt(p.x, p.y);
   };
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!drawing.current) return;
     e.preventDefault();
-    const ctx = ctxRef.current; if (!ctx) return;
     const p = getPos(e.clientX, e.clientY);
-    ctx.lineTo(p.x, p.y); ctx.stroke();
+    drawTo(p.x, p.y);
   };
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.preventDefault();
-    drawing.current = false;
-    (e.target as any).releasePointerCapture?.(e.pointerId);
+    endDraw();
   };
 
-  // Fallback for older browsers: mouse/touch
+  // Fallback mouse/touch (older iOS)
   const onMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => onPointerDown(e as any);
   const onMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => onPointerMove(e as any);
   const onMouseUp   = (e: React.MouseEvent<HTMLCanvasElement>) => onPointerUp(e as any);
   const onTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
     e.preventDefault();
     const t = e.touches[0]; if (!t) return;
-    onPointerDown({ ...e, clientX: t.clientX, clientY: t.clientY, pointerId: 1 } as any);
+    onPointerDown({ ...e, clientX: t.clientX, clientY: t.clientY } as any);
   };
   const onTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
     e.preventDefault();
     const t = e.touches[0]; if (!t) return;
-    onPointerMove({ ...e, clientX: t.clientX, clientY: t.clientY, pointerId: 1 } as any);
+    onPointerMove({ ...e, clientX: t.clientX, clientY: t.clientY } as any);
   };
   const onTouchEnd = (e: React.TouchEvent<HTMLCanvasElement>) => {
     e.preventDefault();
-    onPointerUp({ ...e, pointerId: 1 } as any);
+    onPointerUp(e as any);
   };
 
   function clearSignature() {
     const c = canvasRef.current; const ctx = ctxRef.current; if (!c || !ctx) return;
-    ctx.clearRect(0, 0, c.getBoundingClientRect().width, c.getBoundingClientRect().height);
+    const rect = c.getBoundingClientRect();
+    ctx.clearRect(0, 0, rect.width, rect.height);
   }
 
   async function saveSignature() {
@@ -222,7 +239,6 @@ export default function ChecklistRunPage() {
       .eq("id", checklist.id);
     if (upC) { setLog((l) => [...l, `complete error: ${upC.message}`]); setLoading(false); return; }
 
-    // Audit with actor
     const u = await supabase.auth.getUser();
     const { data: truckRow } = await supabase.from("trucks").select("org_id").eq("id", checklist.truck_id).single();
     if (truckRow?.org_id && u.data.user) {
@@ -284,7 +300,13 @@ export default function ChecklistRunPage() {
         <canvas
           ref={canvasRef}
           className="w-full h-40 border rounded-xl bg-[#F7F9FC]"
-          style={{ touchAction: "none", userSelect: "none" }}
+          style={{
+            touchAction: "none",
+            userSelect: "none",
+            WebkitUserSelect: "none",
+            WebkitTouchCallout: "none",
+            WebkitTapHighlightColor: "transparent",
+          }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
