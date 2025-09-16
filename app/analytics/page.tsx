@@ -4,200 +4,163 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabase";
 
 type Truck = { id: string; name: string };
-type Checklist = {
-  id: string;
-  truck_id: string;
-  status: "open" | "completed";
-  created_at: string;
-  completed_at: string | null;
+
+type KPIs = {
+  last7Total: number;
+  last7Submitted: number;
+  openNow: number;
+  overdue: number;
+  byTruck: Array<{ truck_id: string; name: string; submitted: number; open: number }>;
 };
 
-const fmt = (n: number) => new Intl.NumberFormat().format(n);
-const pct = (num: number, den: number) => (den === 0 ? 0 : Math.round((num / den) * 100));
-
 export default function AnalyticsPage() {
-  const [loading, setLoading] = useState(true);
   const [log, setLog] = useState<string[]>([]);
-  const [trucks, setTrucks] = useState<Truck[]>([]);
-  const [rows, setRows] = useState<Checklist[]>([]);
+  const [kpis, setKpis] = useState<KPIs | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
       try {
-        // Determine the user's org (assume single org membership for MVP)
-        const u = await supabase.auth.getUser();
-        if (!u.data.user) { setLog((l)=>[...l, "Not signed in."]); setLoading(false); return; }
+        const { data: userRes } = await supabase.auth.getUser();
+        const user = userRes?.user;
+        if (!user) { setLog((l)=>[...l,"Not signed in"]); return; }
 
+        // Find org
         const { data: member, error: memErr } = await supabase
           .from("org_members")
           .select("org_id")
-          .eq("user_id", u.data.user.id)
-          .limit(1)
+          .eq("user_id", user.id)
           .maybeSingle();
-
-        if (memErr) setLog((l)=>[...l, `org membership error: ${memErr.message}`]);
+        if (memErr) setLog((l)=>[...l, `org member error: ${memErr.message}`]);
         const orgId = member?.org_id;
-        if (!orgId) { setLog((l)=>[...l, "No org membership found."]); setLoading(false); return; }
+        if (!orgId) { setLog((l)=>[...l,"No org membership found"]); return; }
 
-        // Trucks in org
-        const { data: tr, error: trErr } = await supabase
+        // Load trucks map
+        const { data: trucks, error: trErr } = await supabase
           .from("trucks")
           .select("id,name")
-          .eq("org_id", orgId)
-          .order("name");
+          .eq("org_id", orgId);
         if (trErr) setLog((l)=>[...l, `trucks error: ${trErr.message}`]);
-        setTrucks(tr || []);
+        const tmap = new Map<string, string>((trucks||[]).map(t => [t.id, t.name]));
 
-        // Last 14 days of checklists for these trucks
-        const since = new Date(); since.setDate(since.getDate() - 14);
-        const truckIds = (tr || []).map(t => t.id);
-        if (truckIds.length === 0) { setLoading(false); return; }
+        // Time window
+        const since = new Date();
+        since.setDate(since.getDate() - 7);
 
-        const { data: cls, error: clErr } = await supabase
+        // Pull recent checklists for the org (7 days) and current open for simple KPIs
+        const { data: recent, error: rErr } = await supabase
           .from("checklists")
-          .select("id,truck_id,status,created_at,completed_at")
-          .in("truck_id", truckIds)
+          .select("id, status, created_at, truck_id")
           .gte("created_at", since.toISOString())
-          .order("created_at", { ascending: false });
-        if (clErr) setLog((l)=>[...l, `checklists error: ${clErr.message}`]);
+          .in("truck_id", (trucks||[]).map(t=>t.id));
+        if (rErr) setLog((l)=>[...l, `recent checklists error: ${rErr.message}`]);
 
-        setRows(cls || []);
+        const { data: openAll, error: oErr } = await supabase
+          .from("checklists")
+          .select("id, status, created_at, truck_id")
+          .in("truck_id", (trucks||[]).map(t=>t.id))
+          .neq("status", "submitted");
+        if (oErr) setLog((l)=>[...l, `open checklists error: ${oErr.message}`]);
+
+        // Compute KPIs
+        const last7Total = recent?.length ?? 0;
+        const last7Submitted = (recent||[]).filter(c => c.status === "submitted").length;
+
+        const openNow = openAll?.length ?? 0;
+        const overdueCutoff = new Date();
+        overdueCutoff.setDate(overdueCutoff.getDate() - 1); // "overdue" = older than 1 day and not submitted
+        const overdue = (openAll||[]).filter(c => new Date(c.created_at) < overdueCutoff).length;
+
+        // Per-truck aggregates
+        const agg = new Map<string, { submitted: number; open: number }>();
+        (recent||[]).forEach(c => {
+          const a = agg.get(c.truck_id) || { submitted: 0, open: 0 };
+          if (c.status === "submitted") a.submitted += 1;
+          else a.open += 1;
+          agg.set(c.truck_id, a);
+        });
+        (openAll||[]).forEach(c => {
+          // ensure trucks with only older open items are included
+          const a = agg.get(c.truck_id) || { submitted: 0, open: 0 };
+          if (c.status !== "submitted") a.open += 0; // already counted above
+          agg.set(c.truck_id, a);
+        });
+
+        const byTruck = Array.from(agg.entries()).map(([truck_id, v]) => ({
+          truck_id,
+          name: tmap.get(truck_id) || "Truck",
+          submitted: v.submitted,
+          open: v.open,
+        })).sort((a,b)=> (b.submitted+b.open) - (a.submitted+a.open));
+
+        setKpis({ last7Total, last7Submitted, openNow, overdue, byTruck });
       } finally {
         setLoading(false);
       }
     })();
   }, []);
 
-  // Derived metrics
-  const now = new Date();
-  const sevenDaysAgo = useMemo(() => { const d = new Date(); d.setDate(d.getDate() - 7); return d; }, []);
-  const oneDayAgo = useMemo(() => { const d = new Date(); d.setDate(d.getDate() - 1); return d; }, []);
-
-  const last7 = rows.filter(r => new Date(r.created_at) >= sevenDaysAgo);
-  const last7Completed = last7.filter(r => r.status === "completed");
-  const completionPercent7d = pct(last7Completed.length, last7.length);
-
-  const overdueOpen = rows.filter(r => r.status === "open" && new Date(r.created_at) < oneDayAgo);
-
-  // Per-truck metrics (last 7 days)
-  const perTruck = useMemo(() => {
-    const map: Record<string, { name: string; total: number; done: number }> = {};
-    for (const t of trucks) map[t.id] = { name: t.name, total: 0, done: 0 };
-    for (const r of last7) {
-      const t = map[r.truck_id]; if (!t) continue;
-      t.total += 1;
-      if (r.status === "completed") t.done += 1;
-    }
-    return Object.entries(map).map(([truck_id, v]) => ({ truck_id, ...v, pct: pct(v.done, v.total) }))
-      .sort((a,b)=> b.pct - a.pct);
-  }, [trucks, last7]);
-
-  // Simple 7-day timeline (counts per day)
-  const daily = useMemo(() => {
-    const days: { date: string; total: number; done: number }[] = [];
-    for (let i=6; i>=0; i--) {
-      const d = new Date(now); d.setDate(d.getDate() - i);
-      const key = d.toISOString().slice(0,10);
-      const total = rows.filter(r => new Date(r.created_at).toISOString().slice(0,10) === key).length;
-      const done = rows.filter(r => r.status==="completed" && r.completed_at && new Date(r.completed_at).toISOString().slice(0,10) === key).length;
-      days.push({ date: key, total, done });
-    }
-    return days;
-  }, [rows]);
+  const completionRate = useMemo(() => {
+    if (!kpis) return 0;
+    return kpis.last7Total === 0 ? 0 : Math.round((kpis.last7Submitted / kpis.last7Total) * 100);
+  }, [kpis]);
 
   if (loading) return <main className="p-6">Loading…</main>;
 
   return (
-    <main className="p-6">
+    <main className="p-6 space-y-4">
       <h1 className="text-xl font-bold">Analytics</h1>
-      <p className="text-[#6B7280] mt-1">Last 7–14 days overview for your org.</p>
+      <p className="text-[#6B7280]">Simple KPIs to start. Window: last 7 days.</p>
 
-      {process.env.NEXT_PUBLIC_DEBUG === "true" && log.length > 0 && (
-        <div className="mt-3 bg-red-50 border border-red-200 text-red-700 p-3 rounded-xl">
-          <div className="font-semibold">Debug</div>
+      {log.length > 0 && (
+        <div className="bg-red-50 border border-red-200 text-red-700 p-3 rounded-2xl">
+          <div className="font-semibold mb-1">Debug</div>
           <ul className="list-disc pl-6">{log.map((m,i)=><li key={i}>{m}</li>)}</ul>
         </div>
       )}
 
       {/* KPI cards */}
-      <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <div className="bg-white rounded-2xl shadow-sm p-4">
-          <div className="text-sm text-[#6B7280]">Completion (7d)</div>
-          <div className="text-2xl font-bold mt-1">{completionPercent7d}%</div>
-          <div className="text-xs text-[#6B7280]">{fmt(last7Completed.length)} / {fmt(last7.length)} runs</div>
-        </div>
-        <div className="bg-white rounded-2xl shadow-sm p-4">
-          <div className="text-sm text-[#6B7280]">Overdue (&gt;24h open)</div>
-          <div className="text-2xl font-bold mt-1">{fmt(overdueOpen.length)}</div>
-          <div className="text-xs text-[#6B7280]">Needs attention</div>
-        </div>
-        <div className="bg-white rounded-2xl shadow-sm p-4">
-          <div className="text-sm text-[#6B7280]">Runs (7d)</div>
-          <div className="text-2xl font-bold mt-1">{fmt(last7.length)}</div>
-          <div className="text-xs text-[#6B7280]">{fmt(last7Completed.length)} completed</div>
-        </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <KpiCard label="Completion %" value={`${completionRate}%`} hint={`${kpis?.last7Submitted ?? 0} of ${kpis?.last7Total ?? 0}`} />
+        <KpiCard label="Open Right Now" value={`${kpis?.openNow ?? 0}`} hint="status ≠ submitted" />
+        <KpiCard label="Overdue (1+ day)" value={`${kpis?.overdue ?? 0}`} hint="open & >24h old" />
+        <KpiCard label="Submitted (7d)" value={`${kpis?.last7Submitted ?? 0}`} hint="last 7 days" />
       </div>
 
-      {/* 7-day mini bars */}
-      <div className="mt-6 bg-white rounded-2xl shadow-sm p-4">
-        <div className="font-semibold mb-2">Last 7 Days</div>
-        <div className="grid grid-cols-7 gap-2 items-end">
-          {daily.map(d => {
-            const max = Math.max(1, ...daily.map(x => x.total));
-            const hTotal = (d.total / max) * 80;   // px
-            const hDone  = (d.done  / max) * 80;   // px
-            return (
-              <div key={d.date} className="flex flex-col items-center">
-                <div className="relative w-4 h-20 bg-[#E5E7EB] rounded">
-                  <div className="absolute bottom-0 left-0 right-0 mx-auto w-4 rounded" style={{ height: `${hTotal}px`, background: "#CBD5E1" }} />
-                  <div className="absolute bottom-0 left-0 right-0 mx-auto w-4 rounded" style={{ height: `${hDone}px`,  background: "#004C97" }} />
+      {/* Per-truck list */}
+      <section className="bg-white rounded-2xl shadow-sm p-4">
+        <div className="font-semibold mb-2">By Truck (last 7 days)</div>
+        <div className="divide-y">
+          {(kpis?.byTruck ?? []).map(row => (
+            <div key={row.truck_id} className="py-3 flex items-center justify-between">
+              <div>
+                <div className="font-medium">{row.name}</div>
+                <div className="text-sm text-[#6B7280]">
+                  Submitted: {row.submitted} • Open: {row.open}
                 </div>
-                <div className="text-[10px] mt-1">{d.date.slice(5)}</div>
               </div>
-            );
-          })}
-        </div>
-        <div className="flex items-center gap-3 text-xs text-[#6B7280] mt-2">
-          <span className="inline-block w-3 h-3 rounded" style={{ background: "#004C97" }}></span> Completed
-          <span className="inline-block w-3 h-3 rounded" style={{ background: "#CBD5E1" }}></span> Total
-        </div>
-      </div>
-
-      {/* Per-truck table */}
-      <div className="mt-6 bg-white rounded-2xl shadow-sm p-4">
-        <div className="font-semibold mb-2">Per-Truck Completion (7d)</div>
-        <div className="space-y-2">
-          {perTruck.map(t => (
-            <div key={t.truck_id} className="p-3 rounded-xl border">
-              <div className="flex items-center justify-between">
-                <div className="font-medium">{t.name || "Truck"}</div>
-                <div className="text-sm text-[#6B7280]">{t.done}/{t.total} ({t.pct}%)</div>
-              </div>
-              <div className="h-2 bg-[#E5E7EB] rounded mt-2">
-                <div className="h-2 rounded" style={{ width: `${t.pct}%`, background: "#28A745" }} />
+              <div className="text-sm">
+                <span className="px-3 py-1 rounded-xl bg-[#F7F9FC] border">
+                  Total {row.submitted + row.open}
+                </span>
               </div>
             </div>
           ))}
-          {perTruck.length === 0 && <div className="text-[#6B7280]">No runs in the last week.</div>}
+          {(kpis?.byTruck ?? []).length === 0 && (
+            <div className="text-[#6B7280]">No checklist activity yet.</div>
+          )}
         </div>
-      </div>
-
-      {/* Overdue list */}
-      <div className="mt-6 bg-white rounded-2xl shadow-sm p-4">
-        <div className="font-semibold mb-2">Overdue Checklists (&gt;24h open)</div>
-        <div className="space-y-2">
-          {overdueOpen.map(o => {
-            const truck = trucks.find(t => t.id === o.truck_id);
-            return (
-              <a key={o.id} href={`/checklist/${o.id}`} className="block p-3 rounded-xl border hover:bg-[#F7F9FC]">
-                <div className="font-medium">{truck?.name ?? "Truck"}</div>
-                <div className="text-sm text-[#6B7280]">Started {new Date(o.created_at).toLocaleString()}</div>
-              </a>
-            );
-          })}
-          {overdueOpen.length === 0 && <div className="text-[#6B7280]">No overdue runs 🎉</div>}
-        </div>
-      </div>
+      </section>
     </main>
+  );
+}
+
+function KpiCard({ label, value, hint }: { label: string; value: string; hint?: string }) {
+  return (
+    <div className="bg-white rounded-2xl shadow-sm p-4">
+      <div className="text-sm text-[#6B7280]">{label}</div>
+      <div className="text-2xl font-semibold mt-1">{value}</div>
+      {hint && <div className="text-xs text-[#6B7280] mt-1">{hint}</div>}
+    </div>
   );
 }
