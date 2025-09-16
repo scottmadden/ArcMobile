@@ -8,6 +8,7 @@ type DocRow = {
   id: string;
   truck_id: string;
   file_path: string;
+  name: string | null;      // <-- add name from DB
   doc_type: string;
   created_at: string;
 };
@@ -22,7 +23,6 @@ export default function DocumentsPage() {
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
-  // Load org trucks and select the first one
   useEffect(() => {
     (async () => {
       try {
@@ -32,8 +32,7 @@ export default function DocumentsPage() {
         const { data: member, error: memErr } = await supabase
           .from("org_members").select("org_id").eq("user_id", u.data.user.id).maybeSingle();
         if (memErr) setLog((l)=>[...l, `org member error: ${memErr.message}`]);
-        const orgId = member?.org_id;
-        if (!orgId) { setLog((l)=>[...l,"No org membership"]); return; }
+        const orgId = member?.org_id; if (!orgId) { setLog((l)=>[...l,"No org membership"]); return; }
 
         const { data: tr, error: trErr } = await supabase
           .from("trucks").select("id,name").eq("org_id", orgId).order("name");
@@ -47,12 +46,11 @@ export default function DocumentsPage() {
     })();
   }, []);
 
-  // Load docs for selected truck  (DB TABLE: public.documents)
   async function refreshList(id = truckId) {
     if (!id) return;
     const { data, error } = await supabase
       .from("documents")
-      .select("id, truck_id, file_path, doc_type, created_at")
+      .select("id, truck_id, file_path, name, doc_type, created_at")  // <-- include name
       .eq("truck_id", id)
       .order("created_at", { ascending: false });
     if (error) setLog((l)=>[...l, `documents load error: ${error.message}`]);
@@ -65,7 +63,6 @@ export default function DocumentsPage() {
     [trucks, truckId]
   );
 
-  // Upload handler (STORAGE BUCKET: docs)
   async function uploadSelected() {
     const input = fileRef.current;
     if (!input || !input.files || !truckId) return;
@@ -80,18 +77,24 @@ export default function DocumentsPage() {
       for (const file of files) {
         const path = `truck-${truckId}/${Date.now()}-${file.name}`;
 
-        // Storage upload to bucket 'docs'
+        // 1) Upload to PRIVATE bucket 'docs'
         const up = await supabase.storage.from("docs").upload(path, file, { upsert: true });
         if (up.error) { setLog((l)=>[...l, `storage upload error: ${up.error.message}`]); continue; }
 
-        // Insert DB row into public.documents
+        // 2) Insert DB row (send name to satisfy NOT NULL)
         const ins = await supabase
           .from("documents")
-          .insert({ truck_id: truckId, file_path: path, doc_type: "permit", uploaded_by: u.data.user.id })
-          .select("id, truck_id, file_path, doc_type, created_at")
+          .insert({
+            truck_id: truckId,
+            file_path: path,
+            name: file.name,            // <-- important
+            doc_type: "permit",
+            uploaded_by: u.data.user.id
+          })
+          .select("id, truck_id, file_path, name, doc_type, created_at")
           .single();
-        if (ins.error) { setLog((l)=>[...l, `row insert error: ${ins.error.message}`]); continue; }
 
+        if (ins.error) { setLog((l)=>[...l, `row insert error: ${ins.error.message}`]); continue; }
         ok += 1;
         setDocs(prev => [ins.data!, ...prev]);
       }
@@ -161,11 +164,11 @@ export default function DocumentsPage() {
           <div key={d.id} className="bg-white rounded-2xl shadow-sm p-4 flex items-center gap-3">
             <div className="flex-1">
               <div className="font-medium">{d.doc_type}</div>
-              <div className="text-sm text-[#6B7280]">{d.file_path.split("/").pop()}</div>
+              <div className="text-sm text-[#6B7280]">{d.name ?? d.file_path.split("/").pop()}</div>
               <div className="text-xs text-[#6B7280]">Uploaded {new Date(d.created_at).toLocaleString()}</div>
             </div>
             <button className="rounded-xl border px-3 py-2" onClick={()=>viewDoc(d)} disabled={busy}>View</button>
-            <button className="rounded-xl bg-[#DC3545] text-white px-3 py-2" onClick={()=>deleteDoc(d)} disabled={busy}>Delete</button>
+            <button className="rounded-XL bg-[#DC3545] text-white px-3 py-2" onClick={()=>deleteDoc(d)} disabled={busy}>Delete</button>
           </div>
         ))}
         {docs.length === 0 && <div className="text-[#6B7280]">No documents yet for {truckName}.</div>}
