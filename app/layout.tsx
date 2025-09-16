@@ -16,6 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <nav className="flex gap-4 text-sm">
               <a className="hover:underline" href="/checklist">Checklists</a>
               <a className="hover:underline" href="/documents">Documents</a>
+              <a className="hover:underline" href="/reminders">Reminders</a>
               <a className="hover:underline" href="/assignments">Assignments</a>
               <a className="hover:underline" href="/audit">Audit</a>
               <a className="hover:underline" href="/analytics">Analytics</a>
