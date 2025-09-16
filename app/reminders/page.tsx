@@ -20,6 +20,7 @@ export const dynamic = "force-dynamic";
 
 export default function RemindersPage() {
   const [log, setLog] = useState<string[]>([]);
+  const [orgId, setOrgId] = useState<string>("");
   const [trucks, setTrucks] = useState<Truck[]>([]);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
@@ -41,12 +42,11 @@ export default function RemindersPage() {
         .eq("user_id", u.user.id)
         .maybeSingle();
       if (memErr) setLog(l=>[...l, `org member error: ${memErr.message}`]);
-      const orgId = mem?.org_id;
-      if (!orgId) { setLog(l=>[...l,"No org membership found"]); return; }
+      if (mem?.org_id) setOrgId(mem.org_id);
 
       const [tr, tp, rm] = await Promise.all([
-        supabase.from("trucks").select("id,name").eq("org_id", orgId).order("name"),
-        supabase.from("templates").select("id,name").eq("org_id", orgId).order("name"),
+        supabase.from("trucks").select("id,name").order("name"),
+        supabase.from("templates").select("id,name").order("name"),
         supabase.from("reminders").select("*").order("created_at", { ascending: false })
       ]);
 
@@ -65,11 +65,13 @@ export default function RemindersPage() {
 
   async function createReminder() {
     if (!truckId || !templateId) return;
+    if (!orgId) { setLog(l=>[...l, "No org membership found; cannot create reminder."]); return; }
     setBusy(true);
     setLog([]);
     try {
       const { data: u } = await supabase.auth.getUser();
       const ins = await supabase.from("reminders").insert({
+        org_id: orgId,                 // <— send org_id explicitly
         truck_id: truckId,
         template_id: templateId,
         tz,
@@ -129,9 +131,7 @@ export default function RemindersPage() {
         {rows.map(r => (
           <div key={r.id} className="p-4 flex items-center justify-between">
             <div>
-              <div className="font-medium">
-                {trucks.find(t=>t.id===r.truck_id)?.name ?? "Truck"} • {templates.find(t=>t.id===r.template_id)?.name ?? "Template"}
-              </div>
+              <div className="font-medium">Reminder</div>
               <div className="text-sm text-[#6B7280]">
                 {r.tz} @ {fmtTime(r.hour_local, r.minute_local)} • {r.enabled ? "Enabled" : "Paused"}
                 {r.last_run_on ? ` • Last run: ${r.last_run_on}` : ""}
