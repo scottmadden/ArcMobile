@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { supabase } from "@/lib/supabase"; // <-- fixed path alias
+import { supabase } from "../../lib/supabase"; // <- use relative path from app/audit/
 
 type AuditRow = {
   id: string;
