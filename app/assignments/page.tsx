@@ -1,85 +1,126 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
+import { useEffect, useMemo, useState, Suspense } from "react";
 import { supabase } from "../../lib/supabase";
 
-type Truck = { id: string; name: string };
-type Template = { id: string; name: string };
-type Run = { id: string; truck_id: string; status: string; created_at: string; submitted_at: string | null; template_id: string };
+export const dynamic = "force-dynamic";
+
+type Row = {
+  id: string;
+  status: "open" | "submitted";
+  created_at: string;
+  assigned_to: string | null;
+  truck_id: string;
+  template_id: string;
+  trucks?: { name: string } | null;
+  templates?: { name: string } | null;
+};
 
 export default function AssignmentsPage() {
-  const [log, setLog] = useState<string[]>([]);
-  const [trucks, setTrucks] = useState<Truck[]>([]);
-  const [templates, setTemplates] = useState<Template[]>([]);
-  const [openRuns, setOpenRuns] = useState<Run[]>([]);
-  const [truckId, setTruckId] = useState<string>("");
-  const [templateId, setTemplateId] = useState<string>("");
-  const [busy, setBusy] = useState(false);
+  return (
+    <Suspense fallback={<main className="p-6">Loading…</main>}>
+      <AssignmentsInner />
+    </Suspense>
+  );
+}
 
-  const truckMap = useMemo(() => new Map(trucks.map(t => [t.id, t.name])), [trucks]);
+function AssignmentsInner() {
+  const [log, setLog] = useState<string[]>([]);
+  const [userId, setUserId] = useState<string>("");
+  const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
+      setLoading(true);
+      setLog([]);
       const { data: u } = await supabase.auth.getUser();
-      if (!u.user) { setLog(l=>[...l,"Not signed in"]); return; }
-      // org
-      const { data: mem, error: memErr } = await supabase.from("org_members").select("org_id").eq("user_id", u.user.id).maybeSingle();
-      if (memErr) setLog(l=>[...l,`org member error: ${memErr.message}`]);
-      const orgId = mem?.org_id; if (!orgId) { setLog(l=>[...l,"No org membership"]); return; }
+      if (!u.user) { setLog((l)=>[...l,"Not signed in"]); setLoading(false); return; }
+      setUserId(u.user.id);
 
-      // trucks + templates
-      const [trRes, tpRes] = await Promise.all([
-        supabase.from("trucks").select("id,name").eq("org_id", orgId).order("name"),
-        supabase.from("templates").select("id,name").eq("org_id", orgId).order("name")
-      ]);
-      if (trRes.error) setLog(l=>[...l,`trucks error: ${trRes.error.message}`]);
-      if (tpRes.error) setLog(l=>[...l,`templates error: ${tpRes.error.message}`]);
-      setTrucks(trRes.data || []);
-      setTemplates(tpRes.data || []);
-      if (trRes.data?.[0]) setTruckId(trRes.data[0].id);
-      if (tpRes.data?.[0]) setTemplateId(tpRes.data[0].id);
+      // Last 14 days of OPEN checklists in your org; include related names
+      const start = new Date();
+      start.setDate(start.getDate() - 14);
 
-      // my open assignments
-      const { data: runs, error: rErr } = await supabase
+      const { data, error } = await supabase
         .from("checklists")
-        .select("id, truck_id, status, created_at, submitted_at, template_id")
-        .eq("assigned_to", u.user.id)
-        .neq("status", "submitted")
-        .order("created_at", { ascending: true });
-      if (rErr) setLog(l=>[...l,`assignments error: ${rErr.message}`]);
-      setOpenRuns(runs || []);
+        .select("id,status,created_at,assigned_to,truck_id,template_id,trucks(name),templates(name)")
+        .eq("status","open")
+        .gte("created_at", start.toISOString())
+        .order("created_at",{ ascending: false });
+
+      if (error) setLog((l)=>[...l,`load error: ${error.message}`]);
+      setRows((data || []) as Row[]);
+      setLoading(false);
     })();
   }, []);
 
-  async function startRun() {
-    if (!truckId || !templateId) return;
-    setBusy(true);
-    try {
-      const { data: u } = await supabase.auth.getUser();
-      if (!u.user) return;
-      const { data, error } = await supabase
-        .from("checklists")
-        .insert({
-          truck_id: truckId,
-          template_id: templateId,
-          status: "open",
-          assigned_to: u.user.id,
-          created_by: u.user.id
-        })
-        .select("id, truck_id, status, created_at, submitted_at, template_id")
-        .single();
-      if (error) { setLog(l=>[...l,`start error: ${error.message}`]); return; }
-      // Navigate to the run
-      window.location.href = `/checklist?cid=${data.id}`;
-    } finally {
-      setBusy(false);
-    }
+  const mine = useMemo(() => rows.filter(r => r.assigned_to === userId), [rows, userId]);
+  const unassigned = useMemo(() => rows.filter(r => !r.assigned_to), [rows]);
+  const others = useMemo(() => rows.filter(r => r.assigned_to && r.assigned_to !== userId), [rows, userId]);
+
+  async function claim(row: Row) {
+    const upd = await supabase.from("checklists")
+      .update({ assigned_to: userId })
+      .eq("id", row.id)
+      .select("*").single();
+    if (upd.error) { setLog(l=>[...l,`claim error: ${upd.error.message}`]); return; }
+    setRows(prev => prev.map(r => r.id === row.id ? ({...r, assigned_to: userId}) : r));
   }
+
+  async function unclaim(row: Row) {
+    const upd = await supabase.from("checklists")
+      .update({ assigned_to: null })
+      .eq("id", row.id)
+      .select("*").single();
+    if (upd.error) { setLog(l=>[...l,`unclaim error: ${upd.error.message}`]); return; }
+    setRows(prev => prev.map(r => r.id === row.id ? ({...r, assigned_to: null}) : r));
+  }
+
+  function openRun(row: Row) {
+    // /checklist already supports running by id via query string
+    window.location.href = `/checklist?checklist_id=${row.id}`;
+  }
+
+  function CardList({ title, items, actions }:{
+    title: string; items: Row[];
+    actions: (r: Row)=>JSX.Element
+  }) {
+    return (
+      <section className="bg-white rounded-2xl shadow-sm">
+        <div className="p-4 border-b font-semibold">{title}</div>
+        {items.length === 0 ? (
+          <div className="p-4 text-[#6B7280]">None</div>
+        ) : items.map(r => (
+          <div key={r.id} className="p-4 flex items-center justify-between">
+            <div>
+              <div className="font-medium">
+                {r.trucks?.name ?? "Truck"} • {r.templates?.name ?? "Template"}
+              </div>
+              <div className="text-sm text-[#6B7280]">
+                Created {new Date(r.created_at).toLocaleString()}
+                {r.assigned_to ? " • Assigned" : " • Unassigned"}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {actions(r)}
+              <button className="rounded-xl border px-3 py-2" onClick={()=>openRun(r)}>
+                Open
+              </button>
+            </div>
+          </div>
+        ))}
+      </section>
+    );
+  }
+
+  if (loading) return <main className="p-6">Loading…</main>;
 
   return (
     <main className="p-6 space-y-4">
-      <h1 className="text-xl font-bold">My Assignments</h1>
+      <h1 className="text-xl font-bold">Assignments</h1>
+      <p className="text-[#6B7280]">Claim today’s open checklists, or jump straight in.</p>
+
       {log.length>0 && (
         <div className="bg-red-50 border border-red-200 text-red-700 p-3 rounded-2xl">
           <div className="font-semibold mb-1">Debug</div>
@@ -87,38 +128,21 @@ export default function AssignmentsPage() {
         </div>
       )}
 
-      {/* Start a new run */}
-      <section className="bg-white rounded-2xl shadow-sm p-4">
-        <div className="font-semibold">Start a Checklist</div>
-        <div className="mt-2 flex gap-2 flex-wrap">
-          <select className="border rounded-lg p-2 bg-white" value={truckId} onChange={e=>setTruckId(e.target.value)}>
-            {trucks.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
-          <select className="border rounded-lg p-2 bg-white" value={templateId} onChange={e=>setTemplateId(e.target.value)}>
-            {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
-          <button className="rounded-2xl bg-[#004C97] text-white px-4 py-2 disabled:opacity-50" disabled={busy} onClick={startRun}>
-            {busy ? "Starting…" : "Start"}
-          </button>
-        </div>
-      </section>
-
-      {/* Open runs */}
-      <section className="bg-white rounded-2xl shadow-sm p-4">
-        <div className="font-semibold mb-2">Open Checklists</div>
-        <div className="divide-y">
-          {openRuns.map(r => (
-            <div key={r.id} className="py-3 flex items-center justify-between">
-              <div>
-                <div className="font-medium">{truckMap.get(r.truck_id) ?? "Truck"}</div>
-                <div className="text-sm text-[#6B7280]">Started {new Date(r.created_at).toLocaleString()}</div>
-              </div>
-              <Link href={`/checklist?cid=${r.id}`} className="rounded-xl border px-3 py-2">Open</Link>
-            </div>
-          ))}
-          {openRuns.length === 0 && <div className="text-[#6B7280]">No open assignments.</div>}
-        </div>
-      </section>
+      <CardList
+        title="My Open Assignments"
+        items={mine}
+        actions={(r)=>(<button className="rounded-xl border px-3 py-2" onClick={()=>unclaim(r)}>Unclaim</button>)}
+      />
+      <CardList
+        title="Unassigned"
+        items={unassigned}
+        actions={(r)=>(<button className="rounded-xl border px-3 py-2" onClick={()=>claim(r)}>Claim</button>)}
+      />
+      <CardList
+        title="Assigned to Others"
+        items={others}
+        actions={()=> (<span className="text-xs text-[#6B7280]">View only</span>)}
+      />
     </main>
   );
 }
