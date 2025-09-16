@@ -21,14 +21,28 @@ export default function SetupPage() {
       const { data: u } = await supabase.auth.getUser();
       if (!u.user) { setLog(l=>[...l,"Not signed in"]); return; }
 
-      const mem = await supabase.from("org_members")
-        .select("org_id").eq("user_id", u.user.id).maybeSingle();
+      const mem = await supabase
+        .from("org_members")
+        .select("org_id")
+        .eq("user_id", u.user.id)
+        .maybeSingle();
       if (mem.error) setLog(l=>[...l,`org member error: ${mem.error.message}`]);
       if (mem.data?.org_id) setOrgId(mem.data.org_id);
 
+      // NOTE: order by name (not created_at) to avoid missing-column errors
       const [tr, tp] = await Promise.all([
-        supabase.from("trucks").select("id,name,org_id").order("created_at",{ascending:false}).limit(1).maybeSingle(),
-        supabase.from("templates").select("id,name,org_id").order("created_at",{ascending:false}).limit(1).maybeSingle(),
+        supabase
+          .from("trucks")
+          .select("id,name,org_id")
+          .order("name", { ascending: true })
+          .limit(1)
+          .maybeSingle(),
+        supabase
+          .from("templates")
+          .select("id,name,org_id")
+          .order("name", { ascending: true })
+          .limit(1)
+          .maybeSingle(),
       ]);
       if (tr.error) setLog(l=>[...l,`trucks load error: ${tr.error.message}`]);
       if (tp.error) setLog(l=>[...l,`templates load error: ${tp.error.message}`]);
@@ -41,7 +55,9 @@ export default function SetupPage() {
     if (!orgId) { setLog(l=>[...l,"No org found"]); return; }
     setBusy(true);
     try {
-      const ins = await supabase.from("trucks").insert({ name: "Demo Truck", org_id: orgId }).select("*").single();
+      const ins = await supabase.from("trucks")
+        .insert({ name: "Demo Truck", org_id: orgId })
+        .select("*").single();
       if (ins.error) { setLog(l=>[...l,`create truck error: ${ins.error.message}`]); return; }
       setTruck(ins.data as Truck);
     } finally { setBusy(false); }
@@ -57,7 +73,7 @@ export default function SetupPage() {
       if (t.error) { setLog(l=>[...l,`create template error: ${t.error.message}`]); return; }
       setTemplate(t.data as Template);
 
-      // Seed 6 common items (idempotent-ish)
+      // Seed items
       const items = [
         "Wash hands before service",
         "Hold foods at safe temperatures",
@@ -65,7 +81,7 @@ export default function SetupPage() {
         "Check propane and generator",
         "Stock gloves and towels",
         "Trash removed and bins lined",
-      ].map((text, i) => ({ template_id: t.data.id, text, sort_order: i+1 }));
+      ].map((text, i) => ({ template_id: t.data.id, text, sort_order: i + 1 }));
       const insItems = await supabase.from("items").insert(items);
       if (insItems.error) setLog(l=>[...l,`seed items error: ${insItems.error.message}`]);
     } finally { setBusy(false); }
@@ -75,17 +91,16 @@ export default function SetupPage() {
     if (!truck || !template) { setLog(l=>[...l,"Need a truck and template first"]); return; }
     setBusy(true);
     try {
-      // create an OPEN run for today if none exists
-      const ins = await supabase.rpc("create_or_get_today_run", {
+      // Try RPC if present; otherwise insert directly (idempotent enough for demo)
+      const rpc = await (supabase as any).rpc?.("create_or_get_today_run", {
         p_truck_id: truck.id, p_template_id: template.id
       });
-      // fallback if RPC not present
-      if ((ins as any).error) {
-        const up = await supabase.from("checklists").insert({
-          truck_id: truck.id, template_id: template.id, status: "open"
-        }).select("*").single();
-        if (up.error && !up.error.message.includes("duplicate")) {
-          setLog(l=>[...l,`create run error: ${up.error.message}`]);
+      if (rpc?.error) {
+        const ins = await supabase.from("checklists")
+          .insert({ truck_id: truck.id, template_id: template.id, status: "open" })
+          .select("*").single();
+        if (ins.error && !ins.error.message.includes("duplicate")) {
+          setLog(l=>[...l,`create run error: ${ins.error.message}`]);
           return;
         }
       }
