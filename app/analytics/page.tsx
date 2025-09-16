@@ -1,166 +1,123 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabase";
 
-type Truck = { id: string; name: string };
-
-type KPIs = {
-  last7Total: number;
-  last7Submitted: number;
-  openNow: number;
-  overdue: number;
-  byTruck: Array<{ truck_id: string; name: string; submitted: number; open: number }>;
-};
+export const dynamic = "force-dynamic";
 
 export default function AnalyticsPage() {
+  return (
+    <Suspense fallback={<main className="p-6">Loading…</main>}>
+      <AnalyticsInner />
+    </Suspense>
+  );
+}
+
+type Row = { id: string; status: "open" | "submitted"; created_at: string };
+
+function AnalyticsInner() {
+  const [rows, setRows] = useState<Row[]>([]);
   const [log, setLog] = useState<string[]>([]);
-  const [kpis, setKpis] = useState<KPIs | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
       try {
-        const { data: userRes } = await supabase.auth.getUser();
-        const user = userRes?.user;
-        if (!user) { setLog((l)=>[...l,"Not signed in"]); return; }
+        // Pull last 14 days of checklists; RLS scopes these to the user's org.
+        const start = new Date();
+        start.setDate(start.getDate() - 14);
 
-        // Find org
-        const { data: member, error: memErr } = await supabase
-          .from("org_members")
-          .select("org_id")
-          .eq("user_id", user.id)
-          .maybeSingle();
-        if (memErr) setLog((l)=>[...l, `org member error: ${memErr.message}`]);
-        const orgId = member?.org_id;
-        if (!orgId) { setLog((l)=>[...l,"No org membership found"]); return; }
-
-        // Load trucks map
-        const { data: trucks, error: trErr } = await supabase
-          .from("trucks")
-          .select("id,name")
-          .eq("org_id", orgId);
-        if (trErr) setLog((l)=>[...l, `trucks error: ${trErr.message}`]);
-        const tmap = new Map<string, string>((trucks||[]).map(t => [t.id, t.name]));
-
-        // Time window
-        const since = new Date();
-        since.setDate(since.getDate() - 7);
-
-        // Pull recent checklists for the org (7 days) and current open for simple KPIs
-        const { data: recent, error: rErr } = await supabase
+        const { data, error } = await supabase
           .from("checklists")
-          .select("id, status, created_at, truck_id")
-          .gte("created_at", since.toISOString())
-          .in("truck_id", (trucks||[]).map(t=>t.id));
-        if (rErr) setLog((l)=>[...l, `recent checklists error: ${rErr.message}`]);
+          .select("id,status,created_at")
+          .gte("created_at", start.toISOString())
+          .order("created_at", { ascending: false });
 
-        const { data: openAll, error: oErr } = await supabase
-          .from("checklists")
-          .select("id, status, created_at, truck_id")
-          .in("truck_id", (trucks||[]).map(t=>t.id))
-          .neq("status", "submitted");
-        if (oErr) setLog((l)=>[...l, `open checklists error: ${oErr.message}`]);
-
-        // Compute KPIs
-        const last7Total = recent?.length ?? 0;
-        const last7Submitted = (recent||[]).filter(c => c.status === "submitted").length;
-
-        const openNow = openAll?.length ?? 0;
-        const overdueCutoff = new Date();
-        overdueCutoff.setDate(overdueCutoff.getDate() - 1); // "overdue" = older than 1 day and not submitted
-        const overdue = (openAll||[]).filter(c => new Date(c.created_at) < overdueCutoff).length;
-
-        // Per-truck aggregates
-        const agg = new Map<string, { submitted: number; open: number }>();
-        (recent||[]).forEach(c => {
-          const a = agg.get(c.truck_id) || { submitted: 0, open: 0 };
-          if (c.status === "submitted") a.submitted += 1;
-          else a.open += 1;
-          agg.set(c.truck_id, a);
-        });
-        (openAll||[]).forEach(c => {
-          // ensure trucks with only older open items are included
-          const a = agg.get(c.truck_id) || { submitted: 0, open: 0 };
-          if (c.status !== "submitted") a.open += 0; // already counted above
-          agg.set(c.truck_id, a);
-        });
-
-        const byTruck = Array.from(agg.entries()).map(([truck_id, v]) => ({
-          truck_id,
-          name: tmap.get(truck_id) || "Truck",
-          submitted: v.submitted,
-          open: v.open,
-        })).sort((a,b)=> (b.submitted+b.open) - (a.submitted+a.open));
-
-        setKpis({ last7Total, last7Submitted, openNow, overdue, byTruck });
+        if (error) {
+          setLog((l) => [...l, `load error: ${error.message}`]);
+          return;
+        }
+        setRows((data || []) as Row[]);
       } finally {
         setLoading(false);
       }
     })();
   }, []);
 
-  const completionRate = useMemo(() => {
-    if (!kpis) return 0;
-    return kpis.last7Total === 0 ? 0 : Math.round((kpis.last7Submitted / kpis.last7Total) * 100);
-  }, [kpis]);
+  // Compute metrics
+  const { sevenDayPct, openOverdue, bucket } = useMemo(() => {
+    const now = new Date();
+    const sevenStart = new Date();
+    sevenStart.setDate(now.getDate() - 7);
+
+    const last7 = rows.filter((r) => new Date(r.created_at) >= sevenStart);
+    const last7Total = last7.length;
+    const last7Submitted = last7.filter((r) => r.status === "submitted").length;
+    const sevenDayPct = last7Total ? Math.round((last7Submitted / last7Total) * 100) : 0;
+
+    const openOverdue = rows.filter(
+      (r) => r.status === "open" && new Date(r.created_at).getTime() < now.getTime() - 24 * 60 * 60 * 1000
+    ).length;
+
+    // Group per day for a tiny sparkline-like list
+    const bucket = new Map<string, { total: number; submitted: number }>();
+    rows.forEach((r) => {
+      const day = new Date(r.created_at).toISOString().slice(0, 10);
+      const cur = bucket.get(day) || { total: 0, submitted: 0 };
+      cur.total += 1;
+      if (r.status === "submitted") cur.submitted += 1;
+      bucket.set(day, cur);
+    });
+
+    return { sevenDayPct, openOverdue, bucket };
+  }, [rows]);
 
   if (loading) return <main className="p-6">Loading…</main>;
 
   return (
     <main className="p-6 space-y-4">
       <h1 className="text-xl font-bold">Analytics</h1>
-      <p className="text-[#6B7280]">Simple KPIs to start. Window: last 7 days.</p>
+      <p className="text-[#6B7280]">Simple MVP metrics based on your recent checklists.</p>
 
       {log.length > 0 && (
         <div className="bg-red-50 border border-red-200 text-red-700 p-3 rounded-2xl">
           <div className="font-semibold mb-1">Debug</div>
-          <ul className="list-disc pl-6">{log.map((m,i)=><li key={i}>{m}</li>)}</ul>
+          <ul className="list-disc pl-6">{log.map((m, i) => <li key={i}>{m}</li>)}</ul>
         </div>
       )}
 
-      {/* KPI cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <KpiCard label="Completion %" value={`${completionRate}%`} hint={`${kpis?.last7Submitted ?? 0} of ${kpis?.last7Total ?? 0}`} />
-        <KpiCard label="Open Right Now" value={`${kpis?.openNow ?? 0}`} hint="status ≠ submitted" />
-        <KpiCard label="Overdue (1+ day)" value={`${kpis?.overdue ?? 0}`} hint="open & >24h old" />
-        <KpiCard label="Submitted (7d)" value={`${kpis?.last7Submitted ?? 0}`} hint="last 7 days" />
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="bg-white rounded-2xl shadow-sm p-4">
+          <div className="text-sm text-[#6B7280]">7-day completion</div>
+          <div className="text-3xl font-semibold mt-1">{sevenDayPct}%</div>
+          <div className="text-xs text-[#6B7280] mt-1">Percent of runs submitted in the last 7 days.</div>
+        </div>
+
+        <div className="bg-white rounded-2xl shadow-sm p-4">
+          <div className="text-sm text-[#6B7280]">Open & overdue</div>
+          <div className="text-3xl font-semibold mt-1">{openOverdue}</div>
+          <div className="text-xs text-[#6B7280] mt-1">Open runs older than 24 hours.</div>
+        </div>
       </div>
 
-      {/* Per-truck list */}
       <section className="bg-white rounded-2xl shadow-sm p-4">
-        <div className="font-semibold mb-2">By Truck (last 7 days)</div>
-        <div className="divide-y">
-          {(kpis?.byTruck ?? []).map(row => (
-            <div key={row.truck_id} className="py-3 flex items-center justify-between">
-              <div>
-                <div className="font-medium">{row.name}</div>
-                <div className="text-sm text-[#6B7280]">
-                  Submitted: {row.submitted} • Open: {row.open}
+        <div className="font-medium mb-2">Daily trend (last 14 days)</div>
+        <div className="space-y-2">
+          {Array.from(bucket.entries())
+            .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+            .slice(0, 14)
+            .map(([day, { total, submitted }]) => {
+              const pct = total ? Math.round((submitted / total) * 100) : 0;
+              return (
+                <div key={day} className="flex items-center justify-between text-sm">
+                  <span className="text-[#6B7280]">{day}</span>
+                  <span className="font-medium">{submitted}/{total} • {pct}%</span>
                 </div>
-              </div>
-              <div className="text-sm">
-                <span className="px-3 py-1 rounded-xl bg-[#F7F9FC] border">
-                  Total {row.submitted + row.open}
-                </span>
-              </div>
-            </div>
-          ))}
-          {(kpis?.byTruck ?? []).length === 0 && (
-            <div className="text-[#6B7280]">No checklist activity yet.</div>
-          )}
+              );
+            })}
+          {bucket.size === 0 && <div className="text-[#6B7280] text-sm">No recent data.</div>}
         </div>
       </section>
     </main>
-  );
-}
-
-function KpiCard({ label, value, hint }: { label: string; value: string; hint?: string }) {
-  return (
-    <div className="bg-white rounded-2xl shadow-sm p-4">
-      <div className="text-sm text-[#6B7280]">{label}</div>
-      <div className="text-2xl font-semibold mt-1">{value}</div>
-      {hint && <div className="text-xs text-[#6B7280] mt-1">{hint}</div>}
-    </div>
   );
 }
