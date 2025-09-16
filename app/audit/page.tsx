@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { supabase } from "../lib/supabase";
+import { supabase } from "@/lib/supabase"; // <-- fixed path alias
 
 type AuditRow = {
   id: string;
@@ -29,17 +29,11 @@ export default function AuditPage() {
   useEffect(() => {
     (async () => {
       try {
-        // get org for storage prefixes
         const { data: me } = await supabase.auth.getUser();
-        if (!me.user) {
-          setLog((l) => [...l, "Not signed in"]);
-          return;
-        }
+        if (!me.user) { setLog((l) => [...l, "Not signed in"]); return; }
+
         const { data: m, error: memErr } = await supabase
-          .from("org_members")
-          .select("org_id")
-          .eq("user_id", me.user.id)
-          .maybeSingle();
+          .from("org_members").select("org_id").eq("user_id", me.user.id).maybeSingle();
         if (memErr) setLog((l) => [...l, `member error: ${memErr.message}`]);
         if (m?.org_id) setOrgId(m.org_id);
 
@@ -114,12 +108,10 @@ function AuditCard({ row, orgId }: { row: AuditRow; orgId: string }) {
     if (!row.meta?.checklist_id || !orgId) return;
     setLoading(true);
     try {
-      // signature
       const sigPath = `org/${orgId}/checklists/${row.meta.checklist_id}/signature.png`;
       const sig = await supabase.storage.from("signatures").createSignedUrl(sigPath, 60);
       const signature = sig.data?.signedUrl || null;
 
-      // photos (list prefix)
       const prefix = `org/${orgId}/checklists/${row.meta.checklist_id}/photos`;
       const list = await supabase.storage.from("photos").list(prefix, { limit: 10 });
       const photos: string[] = [];
@@ -137,10 +129,7 @@ function AuditCard({ row, orgId }: { row: AuditRow; orgId: string }) {
   }
 
   useEffect(() => {
-    if (open && row.action === "checklist_submitted") {
-      // lazy-load media only when expanding
-      loadEvidence();
-    }
+    if (open && row.action === "checklist_submitted") loadEvidence();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -169,41 +158,69 @@ function AuditCard({ row, orgId }: { row: AuditRow; orgId: string }) {
           </pre>
 
           {row.action === "checklist_submitted" && (
-            <div className="space-y-2">
-              <div className="font-medium">Evidence</div>
-              {loading && <div className="text-sm text-gray-500">Loading…</div>}
-              {!loading && (
-                <>
-                  {evidence.signature ? (
-                    <div>
-                      <div className="text-sm text-gray-600 mb-1">Signature</div>
-                      <img
-                        src={evidence.signature}
-                        alt="Signature"
-                        className="border rounded-xl max-w-xs"
-                      />
-                    </div>
-                  ) : (
-                    <div className="text-sm text-gray-500">No signature.</div>
-                  )}
-                  <div className="text-sm text-gray-600 mt-2">Photos</div>
-                  {evidence.photos && evidence.photos.length > 0 ? (
-                    <div className="grid grid-cols-3 gap-3">
-                      {evidence.photos.map((u, i) => (
-                        <a key={i} href={u} target="_blank" className="block">
-                          <img src={u} alt={`Photo ${i + 1}`} className="border rounded-xl" />
-                        </a>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-sm text-gray-500">No photos.</div>
-                  )}
-                </>
-              )}
-            </div>
+            <Evidence orgId={orgId} checklistId={row.meta?.checklist_id} />
           )}
         </div>
       )}
     </li>
+  );
+}
+
+function Evidence({ orgId, checklistId }: { orgId: string; checklistId: string }) {
+  const [signature, setSignature] = useState<string | null>(null);
+  const [photos, setPhotos] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try {
+        const sigPath = `org/${orgId}/checklists/${checklistId}/signature.png`;
+        const sig = await supabase.storage.from("signatures").createSignedUrl(sigPath, 60);
+        if (sig.data?.signedUrl) setSignature(sig.data.signedUrl);
+
+        const prefix = `org/${orgId}/checklists/${checklistId}/photos`;
+        const list = await supabase.storage.from("photos").list(prefix, { limit: 10 });
+        const urls: string[] = [];
+        if (list.data) {
+          for (const f of list.data) {
+            const p = `${prefix}/${f.name}`;
+            const u = await supabase.storage.from("photos").createSignedUrl(p, 60);
+            if (u.data?.signedUrl) urls.push(u.data.signedUrl);
+          }
+        }
+        setPhotos(urls);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [orgId, checklistId]);
+
+  if (loading) return <div className="text-sm text-gray-500">Loading…</div>;
+
+  return (
+    <div className="space-y-2">
+      <div className="font-medium">Evidence</div>
+      {signature ? (
+        <div>
+          <div className="text-sm text-gray-600 mb-1">Signature</div>
+          <img src={signature} alt="Signature" className="border rounded-xl max-w-xs" />
+        </div>
+      ) : (
+        <div className="text-sm text-gray-500">No signature.</div>
+      )}
+      <div className="text-sm text-gray-600 mt-2">Photos</div>
+      {photos.length > 0 ? (
+        <div className="grid grid-cols-3 gap-3">
+          {photos.map((u, i) => (
+            <a key={i} href={u} target="_blank" className="block">
+              <img src={u} alt={`Photo ${i + 1}`} className="border rounded-xl" />
+            </a>
+          ))}
+        </div>
+      ) : (
+        <div className="text-sm text-gray-500">No photos.</div>
+      )}
+    </div>
   );
 }
