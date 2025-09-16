@@ -2,6 +2,4 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  font-family: Inter, sans-serif;
-}
+body { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
