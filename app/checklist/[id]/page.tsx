@@ -23,13 +23,14 @@ export default function ChecklistRunPage() {
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [sig, setSig] = useState<Sig | null>(null);
 
-  // Signature canvas
+  // Signature canvas refs
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const drawing = useRef(false);
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
+  const drawingRef = useRef(false);
 
   useEffect(() => {
     (async () => {
-      // Load checklist
+      // Checklist
       const { data: c, error: cErr } = await supabase
         .from("checklists")
         .select("id, template_id, truck_id, status")
@@ -38,7 +39,7 @@ export default function ChecklistRunPage() {
       if (cErr) { setLog((l) => [...l, `checklist error: ${cErr.message}`]); setLoading(false); return; }
       setChecklist(c);
 
-      // Items from template
+      // Items
       const { data: its, error: iErr } = await supabase
         .from("items")
         .select("id,text,sort_order")
@@ -72,7 +73,7 @@ export default function ChecklistRunPage() {
       );
       setPhotos(withPhotoUrls);
 
-      // Latest signature
+      // Latest signature (if any)
       const { data: sigRows, error: sErr } = await supabase
         .from("signatures")
         .select("id, file_path, signed_at")
@@ -113,27 +114,57 @@ export default function ChecklistRunPage() {
     setPhotos((prev)=> [{ ...row, url: link?.signedUrl }, ...prev ]);
   }
 
-  // Signature canvas wiring
+  /*** Signature pad: reliable Pointer Events + HiDPI scaling ***/
   useEffect(() => {
     const c = canvasRef.current; if (!c) return;
-    const ctx = c.getContext("2d"); if (!ctx) return;
-    ctx.lineWidth = 2; ctx.lineCap = "round";
-    const getPos = (e: any) => {
+    const setup = () => {
+      const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
       const rect = c.getBoundingClientRect();
-      if (e.touches && e.touches[0]) return { x: e.touches[0].clientX - rect.left, y: e.touches[0].clientY - rect.top };
-      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      // Set backing store size to match CSS pixels * dpr, then scale context
+      c.width  = Math.max(1, Math.floor(rect.width * dpr));
+      c.height = Math.max(1, Math.floor(rect.height * dpr));
+      const ctx = c.getContext("2d"); if (!ctx) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // scale once
+      ctx.lineWidth = 2; ctx.lineCap = "round";
+      ctxRef.current = ctx;
     };
-    const start = (e:any)=>{ drawing.current = true; const p = getPos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); };
-    const move  = (e:any)=>{ if (!drawing.current) return; const p = getPos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); };
-    const end   = ()=>{ drawing.current = false; };
-    c.onmousedown = start; c.onmousemove = move; c.onmouseup = end; c.onmouseleave = end;
-    c.ontouchstart = start; c.ontouchmove = move; c.ontouchend = end; c.ontouchcancel = end;
+    setup();
+    window.addEventListener("resize", setup);
+    return () => window.removeEventListener("resize", setup);
   }, []);
 
+  const getPos = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const c = canvasRef.current!; const rect = c.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
+
+  const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const ctx = ctxRef.current; if (!ctx) return;
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    drawingRef.current = true;
+    const p = getPos(e);
+    ctx.beginPath(); ctx.moveTo(p.x, p.y);
+  };
+
+  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!drawingRef.current) return;
+    e.preventDefault();
+    const ctx = ctxRef.current; if (!ctx) return;
+    const p = getPos(e);
+    ctx.lineTo(p.x, p.y); ctx.stroke();
+  };
+
+  const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    drawingRef.current = false;
+    (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
+  };
+
   function clearSignature() {
-    const c = canvasRef.current; if (!c) return;
-    const ctx = c.getContext("2d"); if (!ctx) return;
-    ctx.clearRect(0, 0, c.width, c.height);
+    const c = canvasRef.current; const ctx = ctxRef.current; if (!c || !ctx) return;
+    // Clear in CSS pixels; context is already scaled
+    ctx.clearRect(0, 0, c.getBoundingClientRect().width, c.getBoundingClientRect().height);
   }
 
   async function saveSignature() {
@@ -229,7 +260,15 @@ export default function ChecklistRunPage() {
       {/* Signature */}
       <div className="mt-6 bg-white rounded-2xl shadow-sm p-4">
         <div className="font-semibold mb-2">Signature</div>
-        <canvas ref={canvasRef} width={600} height={180} className="w-full border rounded-xl bg-[#F7F9FC]" />
+        <canvas
+          ref={canvasRef}
+          className="w-full h-40 border rounded-xl bg-[#F7F9FC]"
+          style={{ touchAction: "none", userSelect: "none" }}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerLeave={onPointerUp}
+        />
         <div className="mt-2 flex gap-2">
           <button className="rounded-xl border px-3 py-2" onClick={clearSignature}>Clear</button>
           <button className="rounded-xl bg-[#004C97] text-white px-3 py-2" onClick={saveSignature}>Save Signature</button>
