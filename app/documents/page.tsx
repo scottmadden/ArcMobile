@@ -1,106 +1,161 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabase";
 
-type Doc = { id: string; name: string; file_path: string; uploaded_at: string };
 type Truck = { id: string; name: string };
-type DocWithLink = Doc & { url?: string };
+type DocRow = { id: string; truck_id: string; file_path: string; doc_type: string; created_at: string };
 
 export default function DocumentsPage() {
-  const [docs, setDocs] = useState<DocWithLink[]>([]);
-  const [truck, setTruck] = useState<Truck | null>(null);
-  const [file, setFile] = useState<File | null>(null);
   const [log, setLog] = useState<string[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [trucks, setTrucks] = useState<Truck[]>([]);
+  const [truckId, setTruckId] = useState<string>("");
+  const [docs, setDocs] = useState<DocRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
 
-  async function load() {
-    const { data: trucks, error: trErr } = await supabase.from("trucks").select("id,name").limit(1);
-    if (trErr) setLog((l) => [...l, `trucks error: ${trErr.message}`]);
-    const tr = trucks?.[0] ?? null;
-    setTruck(tr);
+  // Load org trucks, pick first
+  useEffect(() => {
+    (async () => {
+      try {
+        const u = await supabase.auth.getUser();
+        if (!u.data.user) { setLog((l)=>[...l,"Not signed in"]); return; }
 
-    const { data: d, error: dErr } = await supabase.from("documents").select("*").limit(20);
-    if (dErr) setLog((l) => [...l, `documents error: ${dErr.message}`]);
+        const { data: member, error: memErr } = await supabase
+          .from("org_members").select("org_id").eq("user_id", u.data.user.id).maybeSingle();
+        if (memErr) setLog((l)=>[...l, `org member error: ${memErr.message}`]);
+        const orgId = member?.org_id;
+        if (!orgId) { setLog((l)=>[...l,"No org membership"]); return; }
 
-    const withLinks: DocWithLink[] = await Promise.all(
-      (d || []).map(async (row) => {
-        const { data: link, error: linkErr } = await supabase.storage.from("documents").createSignedUrl(row.file_path, 60);
-        if (linkErr) setLog((l) => [...l, `signed url error: ${linkErr.message}`]);
-        return { ...row, url: link?.signedUrl };
-      })
-    );
-    setDocs(withLinks);
-  }
+        const { data: tr, error: trErr } = await supabase
+          .from("trucks").select("id,name").eq("org_id", orgId).order("name");
+        if (trErr) setLog((l)=>[...l, `trucks error: ${trErr.message}`]);
+        setTrucks(tr || []);
+        if (tr && tr[0]) setTruckId(tr[0].id);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
 
-  useEffect(() => { load(); }, []);
+  // Load docs for selected truck
+  useEffect(() => {
+    if (!truckId) return;
+    (async () => {
+      const { data, error } = await supabase
+        .from("documents")
+        .select("id, truck_id, file_path, doc_type, created_at")
+        .eq("truck_id", truckId)
+        .order("created_at", { ascending: false });
+      if (error) setLog((l)=>[...l, `documents load error: ${error.message}`]);
+      setDocs(data || []);
+    })();
+  }, [truckId]);
 
-  async function upload() {
-    if (!file) return;
-    if (!truck) { setLog((l) => [...l, "No truck found."]); return; }
-    setLoading(true);
+  const truckName = useMemo(() => trucks.find(t => t.id === truckId)?.name ?? "Truck", [trucks, truckId]);
 
-    const path = `truck-${truck.id}/${file.name}`;
+  async function uploadFiles(files: FileList | null) {
+    if (!files || !truckId) return;
+    setBusy(true);
+    try {
+      const u = await supabase.auth.getUser();
+      if (!u.data.user) { setLog((l)=>[...l,"Not signed in"]); return; }
 
-    const { error: upErr } = await supabase.storage.from("documents").upload(path, file, { upsert: true });
-    if (upErr) { setLog((l) => [...l, `storage upload error: ${upErr.message}`]); setLoading(false); return; }
+      for (const file of Array.from(files)) {
+        const path = `truck-${truckId}/${Date.now()}-${file.name}`;
+        const { error: upErr } = await supabase.storage.from("documents").upload(path, file, { upsert: true });
+        if (upErr) { setLog((l)=>[...l, `storage upload error: ${upErr.message}`]); continue; }
 
-    const { error: rowErr } = await supabase
-      .from("documents")
-      .upsert({ truck_id: truck.id, name: file.name, file_path: path }, { onConflict: "truck_id" });
-    if (rowErr) { setLog((l) => [...l, `documents row error: ${rowErr.message}`]); setLoading(false); return; }
+        const { data: row, error: rowErr } = await supabase
+          .from("documents")
+          .insert({ truck_id: truckId, file_path: path, doc_type: "permit", uploaded_by: u.data.user.id })
+          .select("id, truck_id, file_path, doc_type, created_at")
+          .single();
+        if (rowErr) { setLog((l)=>[...l, `row insert error: ${rowErr.message}`]); continue; }
 
-    // Audit: upload_permit with actor
-    const u = await supabase.auth.getUser();
-    const { data: trOrg } = await supabase.from("trucks").select("org_id").eq("id", truck.id).single();
-    if (trOrg?.org_id && u.data.user) {
-      await supabase.from("audit_log").insert({
-        org_id: trOrg.org_id,
-        actor: u.data.user.id,
-        action: "upload_permit",
-        entity: "documents",
-        entity_id: null
-      });
+        setDocs(prev => [row!, ...prev]);
+      }
+    } finally {
+      setBusy(false);
     }
-
-    setFile(null);
-    await load();
-    setLoading(false);
   }
+
+  async function viewDoc(row: DocRow) {
+    const { data, error } = await supabase.storage.from("documents").createSignedUrl(row.file_path, 60);
+    if (error || !data?.signedUrl) {
+      setLog((l)=>[...l, `signed url error: ${error?.message ?? "no url"}`]);
+      return;
+    }
+    window.open(data.signedUrl, "_blank");
+  }
+
+  async function deleteDoc(row: DocRow) {
+    if (!confirm("Delete this document?")) return;
+    setBusy(true);
+    try {
+      const { error: del1 } = await supabase.storage.from("documents").remove([row.file_path]);
+      if (del1) { setLog((l)=>[...l, `storage delete error: ${del1.message}`]); }
+      const { error: del2 } = await supabase.from("documents").delete().eq("id", row.id);
+      if (del2) { setLog((l)=>[...l, `row delete error: ${del2.message}`]); }
+      setDocs(prev => prev.filter(d => d.id !== row.id));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (loading) return <main className="p-6">Loading…</main>;
 
   return (
     <main className="p-6">
       <h1 className="text-xl font-bold">Documents</h1>
-      <p className="text-muted mt-1">Upload your permit (one per truck in MVP). Files are private; links expire in 1 minute.</p>
+      <p className="text-[#6B7280] mt-1">Upload, view, and delete documents for your trucks.</p>
 
-      {log.length > 0 && (
+      {process.env.NEXT_PUBLIC_DEBUG === "true" && log.length > 0 && (
         <div className="mt-3 bg-red-50 border border-red-200 text-red-700 p-3 rounded-xl">
           <div className="font-semibold">Debug</div>
-          <ul className="list-disc pl-6">{log.map((m, i) => <li key={i}>{m}</li>)}</ul>
+          <ul className="list-disc pl-6">{log.map((m,i)=><li key={i}>{m}</li>)}</ul>
         </div>
       )}
 
-      <div className="mt-4 bg-white rounded-2xl shadow-sm p-4">
-        <input type="file" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-        <button
-          className="mt-3 w-full rounded-xl bg-[#004C97] text-white py-2"
-          onClick={upload}
-          disabled={loading || !file}
+      {/* Truck picker */}
+      <div className="mt-4 flex items-center gap-2">
+        <label className="text-sm text-[#6B7280]">Truck</label>
+        <select
+          className="border rounded-lg p-2 bg-white"
+          value={truckId}
+          onChange={(e)=> setTruckId(e.target.value)}
         >
-          {loading ? "Uploading…" : (docs.length ? "Replace Permit" : "Upload Permit")}
-        </button>
+          {trucks.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
       </div>
 
-      <div className="mt-6 space-y-3">
-        {docs.map((d) => (
-          <div key={d.id} className="bg-white rounded-2xl shadow-sm p-4">
-            <div className="font-semibold">{d.name}</div>
-            <div className="text-sm text-[#6B7280]">Uploaded: {new Date(d.uploaded_at).toLocaleString()}</div>
-            <div className="mt-2">
-              {d.url ? <a href={d.url} target="_blank" className="underline">View permit (1-min link)</a> : <span className="text-sm text-[#6B7280]">No link</span>}
+      {/* Upload */}
+      <div className="mt-4 bg-white rounded-2xl shadow-sm p-4">
+        <div className="font-semibold">Upload Documents</div>
+        <input
+          className="mt-2"
+          type="file"
+          multiple
+          onChange={(e)=> uploadFiles(e.target.files)}
+          disabled={busy}
+        />
+        <div className="text-xs text-[#6B7280] mt-1">Files are private; links expire after 60s.</div>
+      </div>
+
+      {/* List */}
+      <div className="mt-4 space-y-2">
+        {docs.map(d => (
+          <div key={d.id} className="bg-white rounded-2xl shadow-sm p-4 flex items-center gap-3">
+            <div className="flex-1">
+              <div className="font-medium">{d.doc_type}</div>
+              <div className="text-sm text-[#6B7280]">{d.file_path.split("/").pop()}</div>
+              <div className="text-xs text-[#6B7280]">Uploaded {new Date(d.created_at).toLocaleString()}</div>
             </div>
+            <button className="rounded-xl border px-3 py-2" onClick={()=>viewDoc(d)} disabled={busy}>View</button>
+            <button className="rounded-xl bg-[#DC3545] text-white px-3 py-2" onClick={()=>deleteDoc(d)} disabled={busy}>Delete</button>
           </div>
         ))}
+        {docs.length === 0 && <div className="text-[#6B7280]">No documents yet.</div>}
       </div>
     </main>
   );
