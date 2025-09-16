@@ -6,11 +6,10 @@ import { supabase } from "../../lib/supabase";
 
 type Item = { id: string; text: string; sort_order: number };
 
-// Force this route to be dynamic so Vercel doesn't try to prerender it statically
+// Force this route to be dynamic so it isn't pre-rendered
 export const dynamic = "force-dynamic";
 
 export default function ChecklistPage() {
-  // Wrap the component that uses useSearchParams in Suspense (fixes Next.js build error)
   return (
     <Suspense fallback={<main className="p-6">Loading…</main>}>
       <ChecklistRunPageInner />
@@ -20,7 +19,7 @@ export default function ChecklistPage() {
 
 function ChecklistRunPageInner() {
   const params = useSearchParams();
-  const cid = params.get("cid"); // checklist id (required)
+  const cid = params.get("cid"); // checklist id
 
   const [log, setLog] = useState<string[]>([]);
   const [notice, setNotice] = useState<string>("");
@@ -29,7 +28,6 @@ function ChecklistRunPageInner() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
-  // Load the checklist run and its template items
   useEffect(() => {
     (async () => {
       try {
@@ -38,7 +36,7 @@ function ChecklistRunPageInner() {
           return;
         }
 
-        // 1) Load the checklist to get its template_id
+        // Load checklist to get its template_id
         const { data: run, error: runErr } = await supabase
           .from("checklists")
           .select("id, template_id")
@@ -49,12 +47,12 @@ function ChecklistRunPageInner() {
           setLog((l) => [...l, `load run error: ${runErr.message}`]);
           return;
         }
-        if (!run || !run.template_id) {
+        if (!run?.template_id) {
           setLog((l) => [...l, "No template found for this checklist."]);
           return;
         }
 
-        // 2) Load the template's items
+        // Load template items
         const { data: its, error: itemsErr } = await supabase
           .from("items")
           .select("id, text, sort_order")
@@ -67,7 +65,6 @@ function ChecklistRunPageInner() {
         }
 
         setItems(its || []);
-        // Initialize all unchecked
         const init: Record<string, boolean> = {};
         (its || []).forEach((i) => (init[i.id] = false));
         setChecked(init);
@@ -93,24 +90,27 @@ function ChecklistRunPageInner() {
     setLog([]);
 
     try {
-      // Current user
       const { data: u } = await supabase.auth.getUser();
       const userId = u.user?.id ?? null;
 
-      // 1) Insert one response per item
+      // Build response rows
       const rows = items.map((i) => ({
         checklist_id: cid,
         item_id: i.id,
         ok: !!checked[i.id],
         created_by: userId,
       }));
-      // Upsert so re-submits or partial prior inserts don't fail on duplicates const ins = await supabase   .from("responses")   .upsert(rows, { onConflict: "checklist_id,item_id" }); // requires UPDATE policy
+
+      // Upsert so retries/partials don’t fail on the unique (checklist_id, item_id)
+      const ins = await supabase
+        .from("responses")
+        .upsert(rows, { onConflict: "checklist_id,item_id" }); // requires UPDATE policy
       if (ins.error) {
         setLog((l) => [...l, `responses error: ${ins.error.message}`]);
         return;
       }
 
-      // 2) Mark checklist submitted
+      // Mark checklist submitted
       const up = await supabase
         .from("checklists")
         .update({
@@ -123,7 +123,7 @@ function ChecklistRunPageInner() {
         return;
       }
 
-      // 3) Audit row with actor + quick stats
+      // Audit row
       await supabase.from("audit_log").insert({
         action: "checklist_submitted",
         actor: userId,
@@ -135,7 +135,6 @@ function ChecklistRunPageInner() {
       });
 
       setNotice("Checklist submitted.");
-      // Return user to Assignments
       setTimeout(() => {
         window.location.href = "/assignments";
       }, 600);
