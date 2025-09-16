@@ -34,10 +34,13 @@ function ChecklistRunPageInner() {
   const [files, setFiles] = useState<File[]>([]);
   const [sigDataUrl, setSigDataUrl] = useState<string | null>(null);
 
-  // If missing cid, send the user to Assignments automatically
+  // NEW: assignment pill
+  const [assignedTo, setAssignedTo] = useState<string | null>(null);
+  const [meId, setMeId] = useState<string | null>(null);
+
+  // If missing cid, redirect to Assignments (keeps crews on a real run)
   useEffect(() => {
     if (!cid) {
-      // brief delay so the message renders for a moment on slow networks
       const t = setTimeout(() => { window.location.replace("/assignments"); }, 600);
       return () => clearTimeout(t);
     }
@@ -48,21 +51,28 @@ function ChecklistRunPageInner() {
       if (!cid) { setLoading(false); return; }
 
       try {
-        // Org id (for storage pathing)
+        // who am I
         const { data: me } = await supabase.auth.getUser();
         if (!me.user) { setLog(l=>[...l,"Not signed in"]); return; }
+        setMeId(me.user.id);
+
+        // org for storage pathing
         const { data: mem, error: memErr } = await supabase
           .from("org_members").select("org_id").eq("user_id", me.user.id).maybeSingle();
         if (memErr) setLog(l=>[...l, `org member error: ${memErr.message}`]);
         if (mem?.org_id) setOrgId(mem.org_id);
 
-        // Load checklist -> template
+        // load run (grab assigned_to here)
         const { data: run, error: runErr } = await supabase
-          .from("checklists").select("id, template_id").eq("id", cid).maybeSingle();
+          .from("checklists")
+          .select("id, template_id, assigned_to")
+          .eq("id", cid)
+          .maybeSingle();
         if (runErr) { setLog(l=>[...l, `load run error: ${runErr.message}`]); return; }
         if (!run?.template_id) { setLog(l=>[...l, "No template found for this checklist."]); return; }
+        setAssignedTo(run.assigned_to ?? null);
 
-        // Load items
+        // load items
         const { data: its, error: itemsErr } = await supabase
           .from("items").select("id, text, sort_order")
           .eq("template_id", run.template_id)
@@ -174,7 +184,17 @@ function ChecklistRunPageInner() {
     }
   }
 
-  // When missing cid, render a friendly message before redirect fires.
+  // Assignment badge text/color
+  const assignmentText = assignedTo
+    ? (assignedTo === meId ? "Assigned to you" : "Assigned")
+    : "Unassigned";
+  const assignmentClass =
+    assignedTo
+      ? (assignedTo === meId
+          ? "bg-[#E6F0FA] text-[#004C97]"   // you
+          : "bg-[#F7F9FC] text-[#1F2937]")  // someone else
+      : "bg-[#FFF4F4] text-[#DC3545]";      // unassigned
+
   if (!cid) {
     return (
       <main className="p-6 space-y-4">
@@ -190,7 +210,10 @@ function ChecklistRunPageInner() {
 
   return (
     <main className="p-6 space-y-4">
-      <h1 className="text-xl font-bold">Checklist</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-bold">Checklist</h1>
+        <span className={`text-xs px-2 py-1 rounded-full ${assignmentClass}`}>{assignmentText}</span>
+      </div>
 
       {(notice || log.length > 0) && (
         <div className={`p-3 rounded-2xl ${log.length ? "bg-red-50 border border-red-200 text-red-700" : "bg-green-50 border border-green-200 text-green-700"}`}>
@@ -214,7 +237,7 @@ function ChecklistRunPageInner() {
               type="checkbox"
               className="w-6 h-6"
               checked={!!checked[i.id]}
-              onChange={(e) => setChecked((prev) => ({ ...prev, [i.id]: e.target.checked }))}
+              onChange={(e) => toggle(i.id, e.target.checked)}
             />
             <span className="text-lg">{i.text}</span>
           </label>
