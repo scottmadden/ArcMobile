@@ -104,7 +104,7 @@ function ChecklistRunPageInner() {
         ok: !!checked[i.id],
         created_by: userId,
       }));
-      const ins = await supabase.from("responses").insert(rows);
+      // Upsert so re-submits or partial prior inserts don't fail on duplicates const ins = await supabase   .from("responses")   .upsert(rows, { onConflict: "checklist_id,item_id" }); // requires UPDATE policy
       if (ins.error) {
         setLog((l) => [...l, `responses error: ${ins.error.message}`]);
         return;
