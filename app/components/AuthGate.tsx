@@ -2,50 +2,41 @@
 "use client";
 
 import { useEffect } from "react";
-import { usePathname, useSearchParams, useRouter } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { supabase } from "../lib/supabase";
 
-const PUBLIC_ROUTES = new Set([
-  "/login",
-  "/auth/callback", // if you use it
-]);
+type Props = { children: React.ReactNode };
 
-export default function AuthGate({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname() || "/";
-  const search = useSearchParams();
-  const router = useRouter();
+export default function AuthGate({ children }: Props) {
+  const pathname = usePathname();
+  const params = useSearchParams();
 
+  // Redirect to /login when there is no session (except on public routes)
   useEffect(() => {
-    let active = true;
+    (async () => {
+      // Allow the login route (and anything under it) without a session
+      if (pathname?.startsWith("/login")) return;
 
-    async function run() {
       const { data } = await supabase.auth.getUser();
-      const user = data.user;
-
-      // If not logged in and not already on a public route, go to /login
-      if (!user && !PUBLIC_ROUTES.has(pathname)) {
-        const next = pathname + (search?.toString() ? `?${search}` : "");
-        router.replace(`/login?next=${encodeURIComponent(next)}`);
-        return;
+      if (!data?.user) {
+        const search = params?.toString();
+        const nextUrl = pathname + (search ? `?${search}` : "");
+        window.location.replace(`/login?next=${encodeURIComponent(nextUrl)}`);
       }
+    })();
+  }, [pathname, params]);
 
-      // If logged in and sitting on /login, send them to next (or a default)
-      if (user && pathname === "/login") {
-        const next = search?.get("next") || "/assignments"; // change to /dashboard later
-        router.replace(next);
+  // Also handle sign-outs while the app is open
+  useEffect(() => {
+    const sub = supabase.auth.onAuthStateChange((_evt, session) => {
+      if (!session && !pathname?.startsWith("/login")) {
+        const search = params?.toString();
+        const nextUrl = pathname + (search ? `?${search}` : "");
+        window.location.replace(`/login?next=${encodeURIComponent(nextUrl)}`);
       }
-    }
-
-    // react to auth changes too
-    const { data: sub } = supabase.auth.onAuthStateChange(() => run());
-    run();
-
-    return () => {
-      active = false;
-      sub.subscription.unsubscribe();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pathname]);
+    });
+    return () => sub.data.subscription.unsubscribe();
+  }, [pathname, params]);
 
   return <>{children}</>;
 }
