@@ -1,7 +1,7 @@
 import "./globals.css";
 import type { Metadata } from "next";
-import MobileNav from "../components/MobileNav";
-import AuthGate from "../components/AuthGate";
+import MobileNav from "./components/MobileNav";
+import AuthGate from "./components/AuthGate";
 
 export const metadata: Metadata = {
   title: "ArcMobile",
