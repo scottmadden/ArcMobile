@@ -5,6 +5,7 @@ import { supabase } from "../../lib/supabase";
 
 export const dynamic = "force-dynamic";
 
+type NameObj = { name: string };
 type Row = {
   id: string;
   status: "open" | "submitted";
@@ -12,8 +13,8 @@ type Row = {
   assigned_to: string | null;
   truck_id: string;
   template_id: string;
-  trucks?: { name: string } | null;
-  templates?: { name: string } | null;
+  trucks?: NameObj | null;     // normalized to single object
+  templates?: NameObj | null;  // normalized to single object
 };
 
 export default function AssignmentsPage() {
@@ -49,8 +50,18 @@ function AssignmentsInner() {
         .gte("created_at", start.toISOString())
         .order("created_at",{ ascending: false });
 
-      if (error) setLog((l)=>[...l,`load error: ${error.message}`]);
-      setRows((data || []) as Row[]);
+      if (error) {
+        setLog((l)=>[...l,`load error: ${error.message}`]);
+      }
+
+      // Normalize nested relations that can arrive as arrays -> single object or null
+      const normalized: Row[] = ((data || []) as any[]).map((r: any) => {
+        const trucks = Array.isArray(r.trucks) ? (r.trucks[0] ?? null) : (r.trucks ?? null);
+        const templates = Array.isArray(r.templates) ? (r.templates[0] ?? null) : (r.templates ?? null);
+        return { ...r, trucks, templates } as Row;
+      });
+
+      setRows(normalized);
       setLoading(false);
     })();
   }, []);
@@ -78,8 +89,8 @@ function AssignmentsInner() {
   }
 
   function openRun(row: Row) {
-    // /checklist already supports running by id via query string
-    window.location.href = `/checklist?checklist_id=${row.id}`;
+    // Checklist runner expects ?cid=
+    window.location.href = `/checklist?cid=${row.id}`;
   }
 
   function CardList({ title, items, actions }:{
