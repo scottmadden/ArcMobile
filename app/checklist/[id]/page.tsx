@@ -10,6 +10,14 @@ type Checklist = { id: string; template_id: string; truck_id: string; status: st
 type Photo = { id: string; file_path: string; created_at: string; url?: string };
 type Sig   = { id: string; file_path: string; signed_at: string; url?: string };
 
+// --- tiny helper: Safari <->Blob fallback ---
+async function canvasToBlob(c: HTMLCanvasElement): Promise<Blob> {
+  if (c.toBlob) return await new Promise((res) => c.toBlob((b) => res(b as Blob), "image/png"));
+  const dataUrl = c.toDataURL("image/png");
+  const r = await fetch(dataUrl);
+  return await r.blob();
+}
+
 export default function ChecklistRunPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -23,14 +31,13 @@ export default function ChecklistRunPage() {
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [sig, setSig] = useState<Sig | null>(null);
 
-  // Signature canvas refs
+  // Signature pad refs
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
-  const drawingRef = useRef(false);
+  const drawing = useRef(false);
 
   useEffect(() => {
     (async () => {
-      // Checklist
       const { data: c, error: cErr } = await supabase
         .from("checklists")
         .select("id, template_id, truck_id, status")
@@ -39,7 +46,6 @@ export default function ChecklistRunPage() {
       if (cErr) { setLog((l) => [...l, `checklist error: ${cErr.message}`]); setLoading(false); return; }
       setChecklist(c);
 
-      // Items
       const { data: its, error: iErr } = await supabase
         .from("items")
         .select("id,text,sort_order")
@@ -48,7 +54,6 @@ export default function ChecklistRunPage() {
       if (iErr) setLog((l) => [...l, `items error: ${iErr.message}`]);
       setItems(its || []);
 
-      // Existing responses
       const { data: r, error: rErr } = await supabase
         .from("responses")
         .select("item_id,value")
@@ -58,22 +63,20 @@ export default function ChecklistRunPage() {
       (r || []).forEach((row) => { v[row.item_id] = !!row.value; });
       setValues(v);
 
-      // Existing photos
       const { data: pRows, error: pErr } = await supabase
         .from("checklist_photos")
         .select("id, file_path, created_at")
         .eq("checklist_id", checklistId)
         .order("created_at", { ascending: false });
       if (pErr) setLog((l)=>[...l, `photos error: ${pErr.message}`]);
-      const withPhotoUrls: Photo[] = await Promise.all(
+      const photosWithUrls: Photo[] = await Promise.all(
         (pRows || []).map(async (row) => {
           const { data: link } = await supabase.storage.from("evidence").createSignedUrl(row.file_path, 120);
           return { ...row, url: link?.signedUrl };
         })
       );
-      setPhotos(withPhotoUrls);
+      setPhotos(photosWithUrls);
 
-      // Latest signature (if any)
       const { data: sigRows, error: sErr } = await supabase
         .from("signatures")
         .select("id, file_path, signed_at")
@@ -114,63 +117,81 @@ export default function ChecklistRunPage() {
     setPhotos((prev)=> [{ ...row, url: link?.signedUrl }, ...prev ]);
   }
 
-  /*** Signature pad: reliable Pointer Events + HiDPI scaling ***/
+  /** Signature pad: Pointer Events + mouse/touch fallback + HiDPI scaling **/
   useEffect(() => {
     const c = canvasRef.current; if (!c) return;
-    const setup = () => {
+
+    const resize = () => {
       const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
       const rect = c.getBoundingClientRect();
-      // Set backing store size to match CSS pixels * dpr, then scale context
       c.width  = Math.max(1, Math.floor(rect.width * dpr));
       c.height = Math.max(1, Math.floor(rect.height * dpr));
       const ctx = c.getContext("2d"); if (!ctx) return;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // scale once
-      ctx.lineWidth = 2; ctx.lineCap = "round";
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.strokeStyle = "#111827";
       ctxRef.current = ctx;
     };
-    setup();
-    window.addEventListener("resize", setup);
-    return () => window.removeEventListener("resize", setup);
+    resize();
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
   }, []);
 
-  const getPos = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const c = canvasRef.current!; const rect = c.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  const getPos = (clientX: number, clientY: number) => {
+    const c = canvasRef.current!;
+    const rect = c.getBoundingClientRect();
+    return { x: clientX - rect.left, y: clientY - rect.top };
   };
 
+  // Pointer Events (works in iOS Safari/Chrome)
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.preventDefault();
     const ctx = ctxRef.current; if (!ctx) return;
-    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-    drawingRef.current = true;
-    const p = getPos(e);
+    (e.target as any).setPointerCapture?.(e.pointerId);
+    drawing.current = true;
+    const p = getPos(e.clientX, e.clientY);
     ctx.beginPath(); ctx.moveTo(p.x, p.y);
   };
-
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!drawingRef.current) return;
+    if (!drawing.current) return;
     e.preventDefault();
     const ctx = ctxRef.current; if (!ctx) return;
-    const p = getPos(e);
+    const p = getPos(e.clientX, e.clientY);
     ctx.lineTo(p.x, p.y); ctx.stroke();
   };
-
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.preventDefault();
-    drawingRef.current = false;
-    (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
+    drawing.current = false;
+    (e.target as any).releasePointerCapture?.(e.pointerId);
+  };
+
+  // Fallback for older browsers: mouse/touch
+  const onMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => onPointerDown(e as any);
+  const onMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => onPointerMove(e as any);
+  const onMouseUp   = (e: React.MouseEvent<HTMLCanvasElement>) => onPointerUp(e as any);
+  const onTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const t = e.touches[0]; if (!t) return;
+    onPointerDown({ ...e, clientX: t.clientX, clientY: t.clientY, pointerId: 1 } as any);
+  };
+  const onTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const t = e.touches[0]; if (!t) return;
+    onPointerMove({ ...e, clientX: t.clientX, clientY: t.clientY, pointerId: 1 } as any);
+  };
+  const onTouchEnd = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    onPointerUp({ ...e, pointerId: 1 } as any);
   };
 
   function clearSignature() {
     const c = canvasRef.current; const ctx = ctxRef.current; if (!c || !ctx) return;
-    // Clear in CSS pixels; context is already scaled
     ctx.clearRect(0, 0, c.getBoundingClientRect().width, c.getBoundingClientRect().height);
   }
 
   async function saveSignature() {
     if (!checklist) return;
     const c = canvasRef.current; if (!c) return;
-    const blob: Blob = await new Promise((resolve) => c.toBlob((b)=>resolve(b as Blob), "image/png"));
+    const blob = await canvasToBlob(c);
     const path = `checklist-${checklist.id}/signature-${Date.now()}.png`;
     const { error: upErr } = await supabase.storage.from("evidence").upload(path, blob, { upsert: true });
     if (upErr) { setLog((l)=>[...l, `signature upload error: ${upErr.message}`]); return; }
@@ -268,6 +289,13 @@ export default function ChecklistRunPage() {
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerLeave={onPointerUp}
+          onMouseDown={onMouseDown}
+          onMouseMove={onMouseMove}
+          onMouseUp={onMouseUp}
+          onTouchStart={onTouchStart}
+          onTouchMove={onTouchMove}
+          onTouchEnd={onTouchEnd}
+          onContextMenu={(e) => e.preventDefault()}
         />
         <div className="mt-2 flex gap-2">
           <button className="rounded-xl border px-3 py-2" onClick={clearSignature}>Clear</button>
