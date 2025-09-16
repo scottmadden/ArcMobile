@@ -19,7 +19,8 @@ export default function ChecklistPage() {
 
 function ChecklistRunPageInner() {
   const params = useSearchParams();
-  const cid = params.get("cid"); // checklist id
+  // Accept both ?cid= and ?checklist_id=
+  const cid = params.get("cid") || params.get("checklist_id");
 
   const [log, setLog] = useState<string[]>([]);
   const [notice, setNotice] = useState<string>("");
@@ -33,11 +34,20 @@ function ChecklistRunPageInner() {
   const [files, setFiles] = useState<File[]>([]);
   const [sigDataUrl, setSigDataUrl] = useState<string | null>(null);
 
+  // If missing cid, send the user to Assignments automatically
+  useEffect(() => {
+    if (!cid) {
+      // brief delay so the message renders for a moment on slow networks
+      const t = setTimeout(() => { window.location.replace("/assignments"); }, 600);
+      return () => clearTimeout(t);
+    }
+  }, [cid]);
+
   useEffect(() => {
     (async () => {
-      try {
-        if (!cid) { setLog((l)=>[...l, "Missing checklist id (?cid=...)"]); return; }
+      if (!cid) { setLoading(false); return; }
 
+      try {
         // Org id (for storage pathing)
         const { data: me } = await supabase.auth.getUser();
         if (!me.user) { setLog(l=>[...l,"Not signed in"]); return; }
@@ -164,6 +174,18 @@ function ChecklistRunPageInner() {
     }
   }
 
+  // When missing cid, render a friendly message before redirect fires.
+  if (!cid) {
+    return (
+      <main className="p-6 space-y-4">
+        <h1 className="text-xl font-bold">Checklist</h1>
+        <div className="bg-red-50 border border-red-200 text-red-700 p-3 rounded-2xl">
+          Missing checklist id. Redirecting you to <a className="underline" href="/assignments">Assignments</a>…
+        </div>
+      </main>
+    );
+  }
+
   if (loading) return <main className="p-6">Loading…</main>;
 
   return (
@@ -192,7 +214,7 @@ function ChecklistRunPageInner() {
               type="checkbox"
               className="w-6 h-6"
               checked={!!checked[i.id]}
-              onChange={(e) => toggle(i.id, e.target.checked)}
+              onChange={(e) => setChecked((prev) => ({ ...prev, [i.id]: e.target.checked }))}
             />
             <span className="text-lg">{i.text}</span>
           </label>
