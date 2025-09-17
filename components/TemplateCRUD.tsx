@@ -9,17 +9,18 @@ export default function TemplateCRUD({ orgId, onSelect }: { orgId: string; onSel
     const res = await fetch(`/api/templates?orgId=${orgId}`);
     const json = await res.json();
     return json || [];
+    },
   });
 
   const createMutation = useMutation(async (payload:any) => {
     const res = await fetch('/api/templates', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     return res.json();
-  }, { onSuccess: () => qc.invalidateQueries(['templates', orgId]) });
+  }, { onSuccess: () => qc.invalidateQueries({ queryKey: ['templates', orgId] }) });
 
   const deleteMutation = useMutation(async (id:string) => {
     const res = await fetch(`/api/templates?id=${id}`, { method: 'DELETE' });
     return res.json();
-  }, { onSuccess: () => qc.invalidateQueries(['templates', orgId]) });
+  }, { onSuccess: () => qc.invalidateQueries({ queryKey: ['templates', orgId] }) });
 
   const [title, setTitle] = useState('');
 
