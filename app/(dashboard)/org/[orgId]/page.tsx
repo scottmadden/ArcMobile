@@ -16,9 +16,12 @@ export default function OrgDashboardWrapper({ params }: { params: { orgId: strin
   const seededProfileId = '33333333-3333-3333-3333-333333333333';
 
   // Load templates list for selection
-  const { data: templates } = useQuery(['templates', orgId], async () => {
-    const res = await fetch(`/api/templates?orgId=${orgId}`);
-    return res.json();
+  const { data: templates } = useQuery({
+    queryKey: ['templates', orgId],
+    queryFn: async () => {
+      const res = await fetch(`/api/templates?orgId=${orgId}`);
+      return res.json();
+    },
   });
 
   const [selectedTemplate, setSelectedTemplate] = useState<any>(templates?.[0] ?? null);

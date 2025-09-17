@@ -1,0 +1,12 @@
+/* styles/globals.css (duplicate to satisfy different import paths) */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* basic app-level defaults */
+html, body { height: 100%; }
+body {
+  background: #F7F9FC;
+  color: #1F2937;
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+}
