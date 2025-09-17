@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
 export default function TemplateCRUD({ orgId, onSelect }: { orgId: string; onSelect?: (t:any)=>void }) {
   const qc = useQueryClient();
-  const { data: templates } = useQuery(['templates', orgId], async () => {
+  const { data: templates } = useQuery({ queryKey: ['templates', orgId], queryFn: async () => {
     const res = await fetch(`/api/templates?orgId=${orgId}`);
     const json = await res.json();
     return json || [];
