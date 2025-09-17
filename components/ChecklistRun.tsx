@@ -25,7 +25,7 @@ export default function ChecklistRun({ orgId, template, templateItems, truckId, 
     };
     const res = await fetch(`/api/checklists`, { method: 'POST', body: JSON.stringify(payload), headers: { 'Content-Type': 'application/json' }});
     const j = await res.json();
-    qc.invalidateQueries(['checklists', orgId]);
+    qc.invalidateQueries({ queryKey: ['checklists', orgId] });
     // minimal UX: navigate or toast; simplified here
     alert('Checklist submitted');
   };
