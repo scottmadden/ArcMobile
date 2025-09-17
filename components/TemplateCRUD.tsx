@@ -1,4 +1,3 @@
-// components/TemplateCRUD.tsx
 'use client';
 
 import * as React from 'react';
@@ -7,16 +6,16 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { supabase } from '@/lib/supabase/client';
+import { supabase } from '../lib/supabase/client';
 
-// shadcn/ui
-import { Button } from '../components/ui/button';
-import { Input } from './components/ui/input';
-import { Card, CardContent, CardHeader, CardTitle, CardFooter } from '../components/ui/card';
-import { Label } from '../components/ui/label';
-import { Textarea } from '../components/ui/textarea';
-import { Checkbox } from '../components/ui/checkbox';
-import { Separator } from '../components/ui/separator';
+// local minimal UI (no shadcn dependency)
+import { Button } from './ui/button';
+import { Input } from './ui/input';
+import { Card, CardContent, CardHeader, CardTitle, CardFooter } from './ui/card';
+import { Label } from './ui/label';
+import { Textarea } from './ui/textarea';
+import { Checkbox } from './ui/checkbox';
+import { Separator } from './ui/separator';
 
 type Template = {
   id: string;
@@ -54,7 +53,6 @@ export function TemplateCRUD({ orgId }: { orgId: string }) {
   const qc = useQueryClient();
   const [editingTemplate, setEditingTemplate] = useState<Template | null>(null);
 
-  // ---- Queries ----
   const templatesQ = useQuery({
     queryKey: ['templates', orgId],
     queryFn: async () => {
@@ -69,7 +67,6 @@ export function TemplateCRUD({ orgId }: { orgId: string }) {
   });
 
   const itemsQ = useQuery({
-    // When a template is selected, fetch its items
     queryKey: ['template-items', editingTemplate?.id],
     queryFn: async () => {
       if (!editingTemplate?.id) return [] as Item[];
@@ -85,7 +82,6 @@ export function TemplateCRUD({ orgId }: { orgId: string }) {
     enabled: !!editingTemplate?.id,
   });
 
-  // ---- Create Template ----
   const {
     register,
     handleSubmit,
@@ -109,7 +105,6 @@ export function TemplateCRUD({ orgId }: { orgId: string }) {
     },
   });
 
-  // ---- Update Template Name/Frequency ----
   const updateTemplate = useMutation({
     mutationFn: async (patch: Partial<Template> & { id: string }) => {
       const { error } = await supabase.from('templates').update(patch).eq('id', patch.id);
@@ -120,15 +115,10 @@ export function TemplateCRUD({ orgId }: { orgId: string }) {
     },
   });
 
-  // ---- Delete Template ----
   const deleteTemplate = useMutation({
     mutationFn: async (id: string) => {
-      // Optionally delete items first (RLS requires ownership via org_id on both tables)
       const { error: itemsErr } = await supabase.from('items').delete().eq('template_id', id);
-      if (itemsErr && itemsErr.code !== 'PGRST116') {
-        // ignore "no rows" error
-        throw itemsErr;
-      }
+      if (itemsErr && itemsErr.code !== 'PGRST116') throw itemsErr;
       const { error } = await supabase.from('templates').delete().eq('id', id);
       if (error) throw error;
     },
@@ -138,10 +128,8 @@ export function TemplateCRUD({ orgId }: { orgId: string }) {
     },
   });
 
-  // ---- Item Mutations ----
   const addItem = useMutation({
     mutationFn: async (payload: ItemForm & { template_id: string }) => {
-      // find next sort_order
       const { data: maxData, error: maxErr } = await supabase
         .from('items')
         .select('sort_order')
@@ -187,12 +175,10 @@ export function TemplateCRUD({ orgId }: { orgId: string }) {
     },
   });
 
-  // ---- UI ----
   const onCreate = (data: TemplateForm) => createTemplate.mutate(data);
 
   return (
     <div className="space-y-6">
-      {/* Create */}
       <Card className="rounded-2xl shadow-sm">
         <CardHeader>
           <CardTitle className="text-[22px]">Create Checklist Template</CardTitle>
@@ -221,7 +207,6 @@ export function TemplateCRUD({ orgId }: { orgId: string }) {
 
       <Separator />
 
-      {/* List */}
       <div className="space-y-3">
         <h2 className="text-[18px] font-medium">Templates</h2>
         {templatesQ.isLoading ? (
@@ -250,10 +235,8 @@ export function TemplateCRUD({ orgId }: { orgId: string }) {
                     </div>
                   </div>
 
-                  {/* Inline editor for the selected template */}
                   {editingTemplate?.id === t.id && (
                     <div className="mt-6 space-y-4">
-                      {/* Template fields */}
                       <div className="flex flex-col sm:flex-row gap-3">
                         <div className="flex-1 grid gap-2">
                           <Label>Template name</Label>
@@ -285,7 +268,6 @@ export function TemplateCRUD({ orgId }: { orgId: string }) {
 
                       <Separator />
 
-                      {/* Items */}
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
                           <h3 className="text-[16px] font-medium">Items</h3>
@@ -329,52 +311,4 @@ export function TemplateCRUD({ orgId }: { orgId: string }) {
                                   />
                                 </div>
                                 <div className="flex items-center gap-2">
-                                  <Button variant="destructive" onClick={() => deleteItem.mutate(it.id)}>
-                                    Remove
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function AddItemRow({ onAdd }: { onAdd: (payload: ItemForm) => void }) {
-  const form = useForm<ItemForm>({
-    resolver: zodResolver(itemSchema),
-    defaultValues: { label: '', help_text: '', required: false },
-  });
-  const { register, handleSubmit, reset, formState } = form;
-  const submit = (data: ItemForm) => {
-    onAdd(data);
-    reset({ label: '', help_text: '', required: false });
-  };
-  return (
-    <form className="flex flex-col sm:flex-row gap-2" onSubmit={handleSubmit(submit)}>
-      <Input className="sm:w-64" placeholder="Add item label…" {...register('label')} />
-      <Input className="sm:w-80" placeholder="Help text (optional)" {...register('help_text')} />
-      <div className="flex items-center gap-2">
-        <Checkbox id="required" {...register('required')} />
-        <Label htmlFor="required" className="text-sm">
-          Required
-        </Label>
-      </div>
-      <Button type="submit" disabled={formState.isSubmitting}>
-        Add
-      </Button>
-    </form>
-  );
-}
-
-export default TemplateCRUD;
+                                  <Button variant="destructive" onCli
