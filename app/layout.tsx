@@ -1,44 +1,23 @@
-import "./globals.css";
-import type { Metadata } from "next";
-import MobileNav from "../components/MobileNav";
-import { Suspense } from "react";
+// app/layout.tsx
+import '../styles/globals.css'; // ensure Tailwind is included
+import { ReactNode } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 
-// Force dynamic rendering so Vercel/Next won’t try to pre-render pages
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
+const queryClient = new QueryClient();
 
-export const metadata: Metadata = {
-  title: "ArcMobile",
-  description: "Food-truck compliance made simple",
-};
-
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body>
-        <header className="sticky top-0 z-40 bg-white/90 backdrop-blur border-b">
-          <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
-            {/* Brand -> Dashboard */}
-            <a className="font-bold" href="/dashboard">ArcMobile</a>
-            <nav className="hidden md:flex gap-4 text-sm">
-              <a className="hover:underline" href="/assignments">Assignments</a>
-              <a className="hover:underline" href="/checklist">Checklist</a>
-              <a className="hover:underline" href="/documents">Documents</a>
-              <a className="hover:underline" href="/audit">Audit</a>
-              <a className="hover:underline" href="/analytics">Analytics</a>
-              <a className="hover:underline" href="/setup">Setup</a>
-            </nav>
-          </div>
-        </header>
-
-        <main className="max-w-4xl mx-auto px-4 py-4 page">
-          {/* This covers every page that uses useSearchParams/usePathname/etc */}
-          <Suspense fallback={<div className="p-4 text-gray-600">Loading…</div>}>
+      <head />
+      <body className="bg-[#F7F9FC] text-[#1F2937]">
+        <QueryClientProvider client={queryClient}>
+          <div className="min-h-screen max-w-xl mx-auto p-6">
             {children}
-          </Suspense>
-        </main>
-
-        <MobileNav />
+          </div>
+          {/* Devtools only in non-prod if you want */}
+          <ReactQueryDevtools initialIsOpen={false} />
+        </QueryClientProvider>
       </body>
     </html>
   );
