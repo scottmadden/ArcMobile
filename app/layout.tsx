@@ -1,5 +1,5 @@
 // app/layout.tsx
-import '../styles/globals.css';
+import './styles/globals.css';
 import Providers from '../components/Providers'; // adjust path if your components/ folder is elsewhere
 import type { ReactNode } from 'react';
 
