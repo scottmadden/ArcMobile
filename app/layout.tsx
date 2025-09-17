@@ -1,16 +1,10 @@
-// app/layout.tsx
-import './styles/globals.css';
-import Providers from '../components/Providers'; // adjust path if your components/ folder is elsewhere
-import type { ReactNode } from 'react';
+import ReactQueryProvider from '@/components/providers/ReactQueryProvider';
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <head />
       <body>
-        <div className="app-container min-h-screen">
-          <Providers>{children}</Providers>
-        </div>
+        <ReactQueryProvider>{children}</ReactQueryProvider>
       </body>
     </html>
   );
