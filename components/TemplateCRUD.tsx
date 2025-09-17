@@ -11,7 +11,7 @@ import { supabase } from '@/lib/supabase/client';
 
 // shadcn/ui
 import { Button } from '../components/ui/button';
-import { Input } from '../components/ui/input';
+import { Input } from './components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from '../components/ui/card';
 import { Label } from '../components/ui/label';
 import { Textarea } from '../components/ui/textarea';
