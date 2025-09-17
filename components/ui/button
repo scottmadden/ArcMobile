@@ -1,0 +1,17 @@
+import * as React from 'react';
+
+type Props = React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: 'default' | 'secondary' | 'destructive';
+};
+
+const base = 'inline-flex items-center justify-center rounded-xl px-4 h-10 text-sm font-medium transition will-change-transform';
+const variants: Record<NonNullable<Props['variant']>, string> = {
+  default: 'bg-[#004C97] text-white hover:-translate-y-px',
+  secondary: 'bg-[#F7F9FC] text-[#1F2937] border hover:-translate-y-px',
+  destructive: 'bg-[#DC3545] text-white hover:-translate-y-px'
+};
+
+export function Button({ className = '', variant = 'default', ...props }: Props) {
+  return <button className={`${base} ${variants[variant]} ${className}`} {...props} />;
+}
+export default Button;
